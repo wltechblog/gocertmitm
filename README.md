@@ -1,0 +1,494 @@
+# GoCertMITM - TLS Certificate Validation Testing Tool
+
+GoCertMITM is a security testing tool for identifying TLS certificate validation vulnerabilities in applications and systems. It acts as a man-in-the-middle proxy that can test various certificate validation scenarios.
+
+## Features
+
+- **Multiple Testing Methodologies**: Test applications against different certificate validation vulnerabilities:
+  1. **Self-signed certificates**: Tests if clients accept certificates signed by themselves
+  2. **Replaced key certificates**: Tests if clients verify the certificate's public key
+  3. **Real certificates**: Tests if clients accept valid certificates for different domains
+  4. **Real certificates as CA**: Tests if clients accept certificates signed by valid but unauthorized CAs
+
+- **Network Configuration**: Automatically configures the network to intercept connections:
+  - Acts as a network gateway for client devices
+  - Uses iptables to redirect HTTPS traffic
+  - Provides comprehensive testing without client modifications
+  - Accepts any certificate presented by target servers (including invalid or self-signed certificates)
+
+- **Comprehensive Logging**: Detailed logging and reporting:
+  - Real-time console output for immediate feedback
+  - Detailed logs of intercepted data for analysis
+  - Structured storage of test results for reporting
+
+## Installation
+
+### Prerequisites
+
+- Go 1.18 or higher
+- iptables (for traffic redirection)
+- Root/sudo privileges (for network configuration)
+
+### Building from Source
+
+1. Clone the repository:
+   ```
+   git clone https://github.com/gocertmitm/gocertmitm.git
+   cd gocertmitm
+   ```
+
+2. Build the application:
+   ```
+   make build
+   ```
+
+3. Run tests:
+   ```
+   make test
+   ```
+
+### Docker
+
+You can also run GoCertMITM using Docker:
+
+1. Build the Docker image:
+   ```
+   make docker-build
+   ```
+
+2. Run the Docker container:
+   ```
+   make docker-run
+   ```
+
+## Usage
+
+### Basic Usage
+
+```
+./certmitm -listen :8080 -listens :8443 -verbose
+```
+
+### Command-Line Options
+
+- `-listen`: Address to listen on for HTTP proxy (default: ":8080")
+- `-listens`: Address to listen on for HTTPS proxy (default: ":8443")
+- `-verbose`: Enable verbose logging
+- `-certdir`: Directory to store generated certificates (default: "./certs")
+- `-logdir`: Directory to store logs (default: "./logs")
+- `-payloaddir`: Directory to store request/response payloads (default: "./payloads")
+- `-savepayloads`: Enable saving of request/response payloads (default: true)
+- `-testtype`: Test type to start with (default: "self-signed")
+  - `self-signed`: Test if clients accept self-signed certificates (Type 0)
+  - `replaced-key`: Test if clients verify the certificate's public key (Type 1)
+  - `real-cert`: Test if clients accept valid certificates for different domains (Type 2)
+  - `real-ca`: Test if clients accept certificates signed by valid but unauthorized CAs (Type 3)
+  - When auto-testing is disabled, only this test type will be used
+  - When auto-testing is enabled, this test type will be tried first, followed by the others
+- `-autotest`: Automatically test all methods for each domain (default: true)
+  - When enabled, the tool will try each test method for each domain until one succeeds
+  - If all tests fail, the tool will provide a direct tunnel to the target server
+  - Results are cached per domain, so successful tests are remembered
+  - The test order is determined by the `-testtype` flag, with the specified type tried first
+
+### Network Setup
+
+To use GoCertMITM as a man-in-the-middle proxy, you need to:
+
+1. Configure the tool as a network gateway
+2. Redirect HTTPS traffic to the proxy
+3. Configure client devices to use the proxy as their gateway
+
+### Installing the CA Certificate
+
+For proper testing, you need to install the GoCertMITM CA certificate on client devices:
+
+#### On Windows
+
+1. Copy the `ca.crt` file to the client device
+2. Double-click the certificate file
+3. Select "Install Certificate"
+4. Select "Current User" and click "Next"
+5. Select "Place all certificates in the following store"
+6. Click "Browse" and select "Trusted Root Certification Authorities"
+7. Click "Next" and then "Finish"
+
+#### On macOS
+
+1. Copy the `ca.crt` file to the client device
+2. Double-click the certificate file to open it in Keychain Access
+3. Add the certificate to the System keychain
+4. Find the certificate in the list, double-click it
+5. Expand the "Trust" section
+6. Change "When using this certificate" to "Always Trust"
+7. Close the window and enter your password to confirm
+
+#### On iOS
+
+1. Email the `ca.crt` file to the device or host it on a web server
+2. Open the file on the device
+3. Follow the prompts to install the profile
+4. Go to Settings > General > About > Certificate Trust Settings
+5. Enable full trust for the GoCertMITM root certificate
+
+#### On Android
+
+1. Copy the `ca.crt` file to the device
+2. Go to Settings > Security > Install from storage
+3. Select the certificate file
+4. Follow the prompts to install the certificate
+
+#### On Linux
+
+1. Copy the `ca.crt` file to `/usr/local/share/ca-certificates/`
+2. Run `sudo update-ca-certificates`
+
+#### For Firefox
+
+Firefox uses its own certificate store:
+
+1. Open Firefox
+2. Go to Options/Preferences
+3. Search for "certificates"
+4. Click "View Certificates"
+5. Go to the "Authorities" tab
+6. Click "Import" and select the `ca.crt` file
+7. Check "Trust this CA to identify websites" and click "OK"
+
+### Certificate Requirements
+
+GoCertMITM manages most certificate operations automatically, but certain tests require specific files:
+
+#### Default Certificate Storage
+
+By default, all certificates are stored in the `./certs` directory (configurable with the `-certdir` flag):
+
+```
+./certs/
+  ├── ca.crt                # The GoCertMITM root CA certificate (auto-generated on first run)
+  ├── ca.key                # The GoCertMITM root CA private key (auto-generated on first run)
+  ├── self-signed/          # Self-signed certificates
+  │   └── example.com/      # Domain-specific directory
+  │       ├── cert.pem      # Generated certificate
+  │       └── key.pem       # Private key
+  ├── replaced-key/         # Replaced key certificates
+  │   └── example.com/
+  │       ├── cert.pem
+  │       └── key.pem
+  ├── real/                 # Real certificates for different domains
+  │   └── example.com/
+  │       ├── cert.pem
+  │       ├── fullchain.pem
+  │       └── key.pem
+  └── real-ca/              # Real certificates used as CAs
+      └── example.com/
+          ├── cert.pem
+          └── key.pem
+```
+
+- The root CA certificate and key are automatically generated on first run if they don't exist
+- You should install the `ca.crt` file as a trusted root CA on test devices to avoid certificate warnings
+- All generated certificates are cached in memory during runtime and saved to disk for reuse
+- Certificates are organized by test type and domain for efficient retrieval
+
+#### Test-Specific Requirements
+
+1. **Self-signed Certificates Test**:
+   - No additional files required
+   - Certificates are generated dynamically during testing
+
+2. **Replaced Key Certificates Test**:
+   - No additional files required
+   - Certificates are generated dynamically during testing
+
+3. **Real Certificates Test**:
+   - Requires at least one valid certificate to be used in testing
+   - Place these certificates in the following structure:
+   ```
+   ./certs/real/
+     ├── example.com/
+     │   ├── cert.pem       # Leaf certificate for example.com
+     │   ├── fullchain.pem  # Full certificate chain (leaf + intermediates)
+     │   └── key.pem        # Private key for example.com certificate
+     └── other-domain.com/
+         ├── cert.pem       # Leaf certificate for other-domain.com
+         ├── fullchain.pem  # Full certificate chain (leaf + intermediates)
+         └── key.pem        # Private key for other-domain.com certificate
+   ```
+   - The `fullchain.pem` file is strongly recommended and should contain the complete certificate chain
+   - If `fullchain.pem` is not available, the tool will fall back to using `cert.pem`
+   - When a client connects to a domain, the tool will:
+     1. First try to use a real certificate for that specific domain if available
+     2. If no certificate exists for that domain, it will use any available real certificate
+     3. If no real certificates are found at all, it falls back to using a CA-signed certificate
+   - Only one real certificate is required for testing, regardless of how many domains you're testing
+   - The tool supports both PKCS1 and PKCS8 private key formats
+   - Certificate and key files must be in PEM format
+
+4. **Real Certificates as CA Test**:
+   - Requires valid certificates to be used as unauthorized CAs
+   - Place these certificates in the following structure:
+   ```
+   ./certs/ca/
+     ├── example-ca.com/
+     │   ├── cert.pem     # Valid certificate to be used as CA
+     │   └── key.pem      # Private key for the certificate
+     └── other-ca.com/
+         ├── cert.pem     # Valid certificate to be used as CA
+         └── key.pem      # Private key for the certificate
+   ```
+   - When a client connects, the tool will use the specified certificate as a CA to sign the generated certificate
+   - If no CA certificate is found for the specified domain, it falls back to using the default CA
+
+#### Certificate Format
+
+All certificates and keys should be in PEM format:
+- Certificates should begin with `-----BEGIN CERTIFICATE-----`
+- Private keys should begin with `-----BEGIN PRIVATE KEY-----` or `-----BEGIN RSA PRIVATE KEY-----`
+
+#### Obtaining Certificates for Testing
+
+For testing purposes, you can:
+1. Use self-signed certificates (automatically generated)
+2. Use certificates from your own domains
+3. Export certificates from browsers for domains you control
+4. Use test/development certificates from services like Let's Encrypt
+
+**Note**: Only use certificates for domains you control or have permission to test. Using certificates for unauthorized domains may violate terms of service and legal regulations.
+
+#### Creating the Certificate Directory Structure
+
+To set up the required directory structure for certificates, you can use the provided setup script:
+
+```bash
+# Run the setup script
+./scripts/setup_cert_dirs.sh
+```
+
+Or manually create the directories:
+
+```bash
+# Create the main certificate directory
+mkdir -p certs
+
+# Create directories for real certificates
+mkdir -p certs/real/example.com
+mkdir -p certs/real/other-domain.com
+
+# Create directories for CA certificates
+mkdir -p certs/ca/example-ca.com
+mkdir -p certs/ca/other-ca.com
+```
+
+Then place your certificate files in the appropriate directories as described above.
+
+## Testing Methodology
+
+GoCertMITM implements four main testing approaches to identify different types of certificate validation vulnerabilities. The tool can automatically try all methods for each domain until one succeeds, or you can manually select a specific test type:
+
+### 1. Self-signed Certificates
+
+This test determines if clients accept certificates that are signed by themselves rather than by a trusted Certificate Authority (CA).
+
+**How it works:**
+- GoCertMITM generates a certificate where the issuer and subject are identical
+- The certificate is signed using its own private key
+- This certificate is presented to the client during the TLS handshake
+
+**Security implications:**
+- Clients that accept self-signed certificates bypass a fundamental security check in the PKI system
+- Attackers can easily generate self-signed certificates for any domain
+- This vulnerability allows for trivial man-in-the-middle attacks without needing access to trusted CAs
+
+**Common vulnerable scenarios:**
+- Development environments with security checks disabled
+- Applications with improper certificate validation
+- Applications with "accept all certificates" options enabled
+
+### 2. Replaced Key Certificates
+
+This test verifies if clients properly validate the public key in certificates, detecting key mismatches between the expected and presented certificates.
+
+**How it works:**
+- GoCertMITM obtains or generates a valid certificate chain for a domain
+- It then replaces the public key in the certificate with a different one
+- The modified certificate is signed by the GoCertMITM CA
+- This certificate is presented to the client during the TLS handshake
+
+**Security implications:**
+- Clients that don't verify public keys are vulnerable to attacks where an attacker has compromised a private key
+- Even if certificate pinning is implemented, not checking the public key renders this protection ineffective
+- Allows attackers to use stolen certificates with their own private keys
+
+**Common vulnerable scenarios:**
+- Applications with incomplete certificate pinning implementations
+- Custom TLS implementations that don't verify all certificate properties
+- Mobile applications with simplified certificate validation
+
+### 3. Real Certificates for Different Domains
+
+This test checks if clients properly validate that the certificate's domain matches the domain they're connecting to.
+
+**How it works:**
+- GoCertMITM presents a valid certificate for domain A when the client is connecting to domain B
+- The certificate is completely valid and trusted, but for the wrong domain
+- This tests the client's domain validation logic
+
+**Security implications:**
+- Clients that accept certificates for different domains are vulnerable to domain confusion attacks
+- Attackers with a valid certificate for one domain could intercept traffic for another domain
+- This bypasses the domain-specific protection provided by the PKI system
+
+**Common vulnerable scenarios:**
+- Applications that only check certificate validity but not the domain
+- Misconfigured hostname verification
+- Applications with wildcard certificate validation issues
+
+### 4. Real Certificates as CA
+
+This test determines if clients accept certificates signed by valid but unauthorized Certificate Authorities.
+
+**How it works:**
+- GoCertMITM uses a valid certificate from a legitimate website as if it were a CA
+- It then generates and signs new certificates using this "CA"
+- These certificates are presented to clients during the TLS handshake
+
+**Security implications:**
+- Clients that accept any valid certificate as a CA undermine the entire CA trust model
+- Attackers who obtain any valid certificate could generate certificates for any domain
+- This vulnerability effectively breaks the hierarchical trust model of PKI
+
+**Common vulnerable scenarios:**
+- Applications with improper CA validation
+- Custom certificate stores with incorrect trust settings
+- Applications that don't properly validate the certificate chain
+
+These four testing approaches comprehensively cover the most common certificate validation vulnerabilities while keeping the testing process efficient. By testing against these specific scenarios, GoCertMITM can identify weaknesses in TLS implementations that could be exploited by attackers to perform man-in-the-middle attacks.
+
+### Automatic Testing
+
+When auto-testing is enabled (the default), GoCertMITM will:
+
+1. Track each domain that clients attempt to connect to
+2. Try each test method in sequence until one succeeds
+3. Remember successful tests for each domain
+4. Provide a direct tunnel if all tests fail
+
+The testing process works as follows:
+
+1. When a client first connects to a domain, the tool starts with the test type specified by the `-testtype` flag
+2. If the client accepts the certificate (successful MITM), the tool remembers this for future connections
+3. If the client rejects the certificate (TLS handshake failure), the tool:
+   - Detects the handshake error and extracts the domain name
+   - Records the failure for the current test type
+   - Automatically moves to the next test type
+   - Logs the progression through test types
+   - Ensures IP addresses are not mistakenly treated as domains
+4. This process continues until either:
+   - A test succeeds (vulnerability found)
+   - All tests fail (secure client)
+5. If all tests fail, subsequent connections to the same domain will use a direct tunnel
+
+The tool tracks failed handshakes per domain and test type, ensuring that it doesn't repeatedly try tests that have already failed. This allows it to efficiently progress through the test types until it finds a vulnerability or determines that the client is secure.
+
+Results are cached per domain, so successful tests are remembered for future connections to the same domain.
+
+## Logging and Reporting
+
+### General Logging
+
+The logging system provides:
+
+- Real-time console output for immediate feedback
+- Detailed logs of intercepted data for analysis
+- Structured storage of test results for reporting
+
+### Payload Logging
+
+GoCertMITM can save the full request and response payloads for each intercepted connection:
+
+- Each target domain gets its own directory under the payload directory
+- Request and response bodies are saved as separate files
+- Metadata files contain headers and other information
+- Timestamps and client IPs are included in filenames for easy tracking
+- Works with all certificate testing methods, including self-signed certificates
+
+#### Payload Directory Structure
+
+```
+./payloads/
+  ├── example.com/                           # Domain-specific directory
+  │   ├── req_20230601_120000.000_192.168.1.2.meta   # Request metadata
+  │   ├── req_20230601_120000.000_192.168.1.2.body   # Request body
+  │   ├── resp_20230601_120000.000_192.168.1.2.meta  # Response metadata
+  │   └── resp_20230601_120000.000_192.168.1.2.body  # Response body
+  └── other-domain.com/                      # Another domain
+      ├── req_20230601_120500.000_192.168.1.2.meta
+      ├── req_20230601_120500.000_192.168.1.2.body
+      ├── resp_20230601_120500.000_192.168.1.2.meta
+      └── resp_20230601_120500.000_192.168.1.2.body
+```
+
+#### Metadata Files
+
+Metadata files contain important information about the request or response:
+
+- Timestamp
+- Client IP address
+- HTTP method (for requests)
+- Status code (for responses)
+- Host and path
+- All headers
+- Body size and filename (if body exists)
+
+#### Enabling/Disabling Payload Logging
+
+Payload logging is enabled by default but can be disabled:
+
+```bash
+# Disable payload logging
+./certmitm -savepayloads=false
+
+# Change payload directory
+./certmitm -payloaddir=/path/to/payloads
+```
+
+#### Setting Up Payload Directories
+
+You can use the provided script to set up the initial payload directory structure:
+
+```bash
+# Run the setup script
+./scripts/setup_payload_dirs.sh
+```
+
+This will create the base directory structure. Additional domain directories will be created automatically as needed during operation.
+
+## Development Roadmap
+
+### Short-term Tasks
+- Add support for additional certificate validation tests
+- Improve error handling for edge cases
+- Enhance documentation with more examples
+- Add support for upstream proxies
+
+### Medium-term Goals
+- Develop a web interface for easier result analysis
+- Add support for automated testing of specific applications
+- Implement pre-generation of certificates for faster testing
+- Create reporting templates for vulnerability disclosure
+
+### Long-term Vision
+- Expand to support additional protocols beyond HTTPS
+- Develop plugins for popular security testing frameworks
+- Create a database of known vulnerable applications
+- Provide automated remediation recommendations
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Acknowledgments
+
+- Inspired by the need for better TLS security testing tools
+- Thanks to all contributors and the security research community
