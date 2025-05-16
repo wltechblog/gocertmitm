@@ -25,26 +25,28 @@ func GetOriginalDst(conn *net.TCPConn) (*OriginalDestination, error) {
 	localAddr := conn.LocalAddr().String()
 	remoteAddr := conn.RemoteAddr().String()
 
-	fmt.Printf("[DEBUG] GetOriginalDst called for connection from %s to %s\n", remoteAddr, localAddr)
+	// We don't have a logger instance here, so we'll use fmt.Printf for now
+	// These debug messages will be shown when -debug is enabled through the standard error logger
+	fmt.Printf("[DEBUG-ORIGDST] GetOriginalDst called for connection from %s to %s\n", remoteAddr, localAddr)
 
 	file, err := conn.File()
 	if err != nil {
-		fmt.Printf("[ERROR] Failed to get file descriptor for connection %s -> %s: %v\n", remoteAddr, localAddr, err)
+		fmt.Printf("[ERROR-ORIGDST] Failed to get file descriptor for connection %s -> %s: %v\n", remoteAddr, localAddr, err)
 		return nil, fmt.Errorf("failed to get file descriptor: %v", err)
 	}
 	defer file.Close()
 
 	fd := int(file.Fd())
-	fmt.Printf("[DEBUG] Got file descriptor %d for connection %s -> %s\n", fd, remoteAddr, localAddr)
+	fmt.Printf("[DEBUG-ORIGDST] Got file descriptor %d for connection %s -> %s\n", fd, remoteAddr, localAddr)
 
 	// Get original destination using SO_ORIGINAL_DST socket option
 	// This works for connections redirected by iptables REDIRECT or TPROXY
-	fmt.Printf("[DEBUG] Calling GetsockoptIPv6Mreq with fd=%d, IPPROTO_IP=%d, SO_ORIGINAL_DST=%d\n",
+	fmt.Printf("[DEBUG-ORIGDST] Calling GetsockoptIPv6Mreq with fd=%d, IPPROTO_IP=%d, SO_ORIGINAL_DST=%d\n",
 		fd, unix.IPPROTO_IP, SO_ORIGINAL_DST)
 
 	addr, err := unix.GetsockoptIPv6Mreq(fd, unix.IPPROTO_IP, SO_ORIGINAL_DST)
 	if err != nil {
-		fmt.Printf("[ERROR] getsockopt SO_ORIGINAL_DST failed for connection %s -> %s: %v\n",
+		fmt.Printf("[ERROR-ORIGDST] getsockopt SO_ORIGINAL_DST failed for connection %s -> %s: %v\n",
 			remoteAddr, localAddr, err)
 		return nil, fmt.Errorf("getsockopt SO_ORIGINAL_DST failed: %v", err)
 	}
@@ -58,7 +60,7 @@ func GetOriginalDst(conn *net.TCPConn) (*OriginalDestination, error) {
 	// };
 
 	// Debug the raw sockaddr data
-	fmt.Printf("[DEBUG] Raw sockaddr data: family=%d, port=%d,%d, addr=%d,%d,%d,%d\n",
+	fmt.Printf("[DEBUG-ORIGDST] Raw sockaddr data: family=%d, port=%d,%d, addr=%d,%d,%d,%d\n",
 		addr.Multiaddr[1], addr.Multiaddr[2], addr.Multiaddr[3],
 		addr.Multiaddr[4], addr.Multiaddr[5], addr.Multiaddr[6], addr.Multiaddr[7])
 
@@ -80,7 +82,7 @@ func GetOriginalDst(conn *net.TCPConn) (*OriginalDestination, error) {
 		HostPort: fmt.Sprintf("%s:%d", ip.String(), port),
 	}
 
-	fmt.Printf("[DEBUG] Original destination determined: %s:%d (IP: %s) for connection %s -> %s\n",
+	fmt.Printf("[DEBUG-ORIGDST] Original destination determined: %s:%d (IP: %s) for connection %s -> %s\n",
 		ip.String(), port, ip.String(), remoteAddr, localAddr)
 
 	return result, nil

@@ -144,14 +144,26 @@ func NewServer(httpAddr, httpsAddr string, certManager *certificates.Manager, lo
 				// Get client IP (for logging)
 				if hello.Conn != nil {
 					clientIP, _, _ := net.SplitHostPort(hello.Conn.RemoteAddr().String())
-					fmt.Printf("[DEBUG-TLS-CONFIG] Client IP: %s, Server Name: %s\n", clientIP, serverName)
+
+					// Get a request ID for this connection
+					reqID := server.logger.GetRequestID(clientIP, serverName)
+
+					server.logger.DebugWithRequestIDf(reqID, "[TLS-CONFIG] Client IP: %s, Server Name: %s", clientIP, serverName)
 				}
 
 				// Check if this is a DebugConnection
 				if debugConn, ok := hello.Conn.(*DebugConnection); ok {
+					// Get the request ID if it exists, or create one
+					reqID := debugConn.reqID
+					if reqID == "" {
+						clientIP, _, _ := net.SplitHostPort(hello.Conn.RemoteAddr().String())
+						reqID = server.logger.GetRequestID(clientIP, serverName)
+						debugConn.SetRequestID(reqID)
+					}
+
 					// Check if this connection is marked for direct tunnel mode
 					if debugConn.IsDirectTunnel() {
-						fmt.Printf("[DEBUG-TLS-CONFIG] Connection %s is marked for direct tunnel mode, skipping TLS handshake\n",
+						server.logger.DebugWithRequestIDf(reqID, "[TLS-CONFIG] Connection %s is marked for direct tunnel mode, skipping TLS handshake",
 							hello.Conn.RemoteAddr())
 
 						// Return nil to indicate that we don't want to proceed with TLS
@@ -167,7 +179,7 @@ func NewServer(httpAddr, httpsAddr string, certManager *certificates.Manager, lo
 					server.directTunnelMu.Unlock()
 
 					if isDirectTunnel {
-						fmt.Printf("[DEBUG-TLS-CONFIG] Original destination IP %s is marked for direct tunnel mode, skipping TLS handshake\n",
+						server.logger.DebugWithRequestIDf(reqID, "[TLS-CONFIG] Original destination IP %s is marked for direct tunnel mode, skipping TLS handshake",
 							origDestIP)
 
 						// Return nil to indicate that we don't want to proceed with TLS
@@ -451,11 +463,17 @@ func (s *Server) getAutoTestCertificateFunc() func(*tls.ClientHelloInfo) (*tls.C
 
 			// If this is a DebugConnection, set the domain and client IP
 			if debugConn, ok := clientHello.Conn.(*DebugConnection); ok {
+				// Get or create a request ID
+				reqID := debugConn.reqID
+				if reqID == "" {
+					reqID = s.logger.GetRequestID(clientIP, serverName)
+				}
+
 				// Check if this connection is already marked for direct tunnel mode
 				if debugConn.IsDirectTunnel() {
 					// This connection is already marked for direct tunnel mode
 					// We should return a special error to prevent TLS handshake
-					fmt.Printf("[DEBUG-TLS-HELLO] Connection %s is marked for direct tunnel mode, skipping TLS handshake\n",
+					s.logger.DebugWithRequestIDf(reqID, "[TLS-HELLO] Connection %s is marked for direct tunnel mode, skipping TLS handshake",
 						clientHello.Conn.RemoteAddr())
 
 					// Get the original destination IP
@@ -477,10 +495,10 @@ func (s *Server) getAutoTestCertificateFunc() func(*tls.ClientHelloInfo) (*tls.C
 				debugConn.SetClientIP(clientIP)
 
 				// Set the request ID as well
-				reqID := s.logger.GetRequestID(clientIP, serverName)
+				reqID = s.logger.GetRequestID(clientIP, serverName)
 				debugConn.SetRequestID(reqID)
 
-				fmt.Printf("[DEBUG-TLS-HELLO] Set domain %s and client IP %s on connection %s\n",
+				s.logger.DebugWithRequestIDf(reqID, "[TLS-HELLO] Set domain %s and client IP %s on connection %s",
 					serverName, clientIP, clientHello.Conn.RemoteAddr())
 			}
 		}
@@ -702,15 +720,18 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	// Get client IP
 	clientIP := getClientIP(r)
 
+	// Get a request ID for this connection
+	reqID := s.logger.GetRequestID(clientIP, r.Host)
+
 	// Print immediate debug information about the connection
-	fmt.Printf("[DEBUG-HTTP-CONNECTION] New HTTP connection from %s to %s (Method: %s, URL: %s, Proto: %s)\n",
+	s.logger.DebugWithRequestIDf(reqID, "[HTTP-CONNECTION] New HTTP connection from %s to %s (Method: %s, URL: %s, Proto: %s)",
 		clientIP, r.Host, r.Method, r.URL, r.Proto)
 
 	// Log all request headers for debugging
-	fmt.Printf("[DEBUG-HTTP-HEADERS] Request headers from %s:\n", clientIP)
+	s.logger.DebugWithRequestIDf(reqID, "[HTTP-HEADERS] Request headers from %s:", clientIP)
 	for name, values := range r.Header {
 		for _, value := range values {
-			fmt.Printf("[DEBUG-HTTP-HEADERS]   %s: %s\n", name, value)
+			s.logger.DebugWithRequestIDf(reqID, "[HTTP-HEADERS]   %s: %s", name, value)
 		}
 	}
 
@@ -773,15 +794,18 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 	// Get client IP
 	clientIP := getClientIP(r)
 
+	// Get a request ID for this connection
+	reqID := s.logger.GetRequestID(clientIP, r.Host)
+
 	// Print immediate debug information about the connection
-	fmt.Printf("[DEBUG-HTTPS-CONNECTION] New HTTPS connection from %s to %s (Method: %s, URL: %s, Proto: %s)\n",
+	s.logger.DebugWithRequestIDf(reqID, "[HTTPS-CONNECTION] New HTTPS connection from %s to %s (Method: %s, URL: %s, Proto: %s)",
 		clientIP, r.Host, r.Method, r.URL, r.Proto)
 
 	// Log all request headers for debugging
-	fmt.Printf("[DEBUG-HTTPS-HEADERS] Request headers from %s:\n", clientIP)
+	s.logger.DebugWithRequestIDf(reqID, "[HTTPS-HEADERS] Request headers from %s:", clientIP)
 	for name, values := range r.Header {
 		for _, value := range values {
-			fmt.Printf("[DEBUG-HTTPS-HEADERS]   %s: %s\n", name, value)
+			s.logger.DebugWithRequestIDf(reqID, "[HTTPS-HEADERS]   %s: %s", name, value)
 		}
 	}
 
@@ -1177,18 +1201,18 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 				s.logger.InfoWithRequestIDf(reqID, "[ORIGINAL-DST] Request for hostname %s directed to IP %s",
 					originalHostname, originalDest.IPString)
 
-				fmt.Printf("[DEBUG-CONNECT] Updated request host to %s (original hostname: %s)\n",
+				s.logger.DebugWithRequestIDf(reqID, "[CONNECT] Updated request host to %s (original hostname: %s)",
 					r.Host, originalHostname)
 			} else {
-				fmt.Printf("[DEBUG-CONNECT] Original destination matches Host header: %s\n", r.Host)
+				s.logger.DebugWithRequestIDf(reqID, "[CONNECT] Original destination matches Host header: %s", r.Host)
 			}
 		} else {
 			s.logger.DebugWithRequestIDf(reqID, "[ORIGINAL-DST] Failed to get original destination: %v", err)
-			fmt.Printf("[DEBUG-CONNECT] Failed to get original destination for client %s: %v\n",
+			s.logger.DebugWithRequestIDf(reqID, "[CONNECT] Failed to get original destination for client %s: %v",
 				clientIP, err)
 		}
 	} else {
-		fmt.Printf("[DEBUG-CONNECT] Connection is not a TCP connection, cannot get original destination\n")
+		s.logger.DebugWithRequestIDf(reqID, "[CONNECT] Connection is not a TCP connection, cannot get original destination")
 	}
 
 	// Store the destination information for this client IP
@@ -1387,7 +1411,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		debugConn.SetClientIP(clientIP)
 		debugConn.SetRequestID(reqID)
 
-		fmt.Printf("[DEBUG-CONNECT] Set domain %s and client IP %s on connection %s\n",
+		s.logger.DebugWithRequestIDf(reqID, "[CONNECT] Set domain %s and client IP %s on connection %s",
 			hostWithoutPort, clientIP, clientConn.RemoteAddr())
 	}
 
