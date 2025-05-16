@@ -77,7 +77,10 @@ if [ ! -f "$ORIGINAL_RULES_FILE" ]; then
   fi
 
   # Remove the specific rules we added
-  echo "Removing DNAT rules..."
+  echo "Removing redirection rules..."
+  iptables -t nat -D PREROUTING -p tcp --dport 443 -s $TARGET_IP -j REDIRECT --to-port $PROXY_PORT 2>/dev/null
+  verbose "Removed PREROUTING REDIRECT rule for target IP $TARGET_IP"
+
   iptables -t nat -D PREROUTING -p tcp --dport 443 -s $TARGET_IP -j DNAT --to-destination $PROXY_IP:$PROXY_PORT 2>/dev/null
   verbose "Removed PREROUTING DNAT rule for target IP $TARGET_IP"
 
@@ -97,6 +100,9 @@ if [ ! -f "$ORIGINAL_RULES_FILE" ]; then
 
   iptables -D INPUT -p tcp -s $TARGET_IP -j ACCEPT 2>/dev/null
   verbose "Removed INPUT ACCEPT rule for target IP $TARGET_IP"
+
+  iptables -D INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null
+  verbose "Removed INPUT ACCEPT rule for established connections"
 
   echo "Rules removed."
 

@@ -99,12 +99,18 @@ echo "Setting up IP masquerading for outgoing traffic..."
 iptables -t nat -A POSTROUTING -o $PRIMARY_INTERFACE -j MASQUERADE
 verbose "Added POSTROUTING rule for IP masquerading"
 
-# Use DNAT to redirect only traffic from the target IP to port 443
-echo "Setting up DNAT for traffic from $TARGET_IP to port 443..."
+# Use a combination of REDIRECT and DNAT for more reliable interception
+echo "Setting up traffic redirection for traffic from $TARGET_IP to port 443..."
 
-# Only intercept traffic from the specified target IP
+# First, try using REDIRECT for traffic from the target IP to port 443
+echo "Method 1: Using REDIRECT..."
+iptables -t nat -A PREROUTING -p tcp --dport 443 -s $TARGET_IP -j REDIRECT --to-port $PROXY_PORT
+verbose "Added PREROUTING rule to REDIRECT port 443 traffic from $TARGET_IP to port $PROXY_PORT"
+
+# Also add a DNAT rule as a backup method
+echo "Method 2: Using DNAT..."
 iptables -t nat -A PREROUTING -p tcp --dport 443 -s $TARGET_IP -j DNAT --to-destination $PROXY_IP:$PROXY_PORT
-verbose "Added PREROUTING rule to redirect port 443 traffic from $TARGET_IP to $PROXY_IP:$PROXY_PORT"
+verbose "Added PREROUTING rule to DNAT port 443 traffic from $TARGET_IP to $PROXY_IP:$PROXY_PORT"
 
 # Add a rule to mark connections for routing
 echo "Setting up connection marking for proper routing..."
@@ -120,6 +126,11 @@ verbose "Added INPUT rule to allow traffic to proxy port $PROXY_PORT"
 echo "Ensuring traffic from target IP is allowed..."
 iptables -A INPUT -p tcp -s $TARGET_IP -j ACCEPT
 verbose "Added INPUT rule to allow all TCP traffic from $TARGET_IP"
+
+# Add specific rule to allow established connections
+echo "Ensuring established connections are allowed..."
+iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+verbose "Added INPUT rule to allow established connections"
 
 # Display the current rules for verification
 if [ "$VERBOSE" -eq 1 ]; then
