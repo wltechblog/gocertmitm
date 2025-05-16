@@ -783,6 +783,9 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// This is useful for transparent proxy mode
 	var originalDest *OriginalDestination
 	if tcpConn, ok := clientConn.(*net.TCPConn); ok {
+		fmt.Printf("[DEBUG-CONNECT] Attempting to get original destination for connection from %s (Host: %s)\n",
+			clientIP, r.Host)
+
 		var err error
 		originalDest, err = GetOriginalDst(tcpConn)
 		if err == nil {
@@ -790,10 +793,16 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 			s.logger.InfoWithRequestIDf(reqID, "[ORIGINAL-DST] Original destination for client %s: %s (Host header: %s)",
 				clientIP, originalDest.HostPort, r.Host)
 
+			fmt.Printf("[DEBUG-CONNECT] Successfully got original destination: %s for client %s (Host header: %s)\n",
+				originalDest.HostPort, clientIP, r.Host)
+
 			// Always use the original destination IP:port from SO_ORIGINAL_DST
 			// This ensures we're connecting to the correct destination regardless of DNS
 			if originalDest.HostPort != r.Host {
 				s.logger.InfoWithRequestIDf(reqID, "[ORIGINAL-DST] Using original destination %s instead of Host header %s",
+					originalDest.HostPort, r.Host)
+
+				fmt.Printf("[DEBUG-CONNECT] Original destination %s differs from Host header %s - using original destination\n",
 					originalDest.HostPort, r.Host)
 
 				// Store the original hostname for logging purposes
@@ -812,10 +821,19 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 				reqID = s.logger.GetRequestID(clientIP, hostWithoutPort)
 				s.logger.InfoWithRequestIDf(reqID, "[ORIGINAL-DST] Request for hostname %s directed to IP %s",
 					originalHostname, originalDest.IPString)
+
+				fmt.Printf("[DEBUG-CONNECT] Updated request host to %s (original hostname: %s)\n",
+					r.Host, originalHostname)
+			} else {
+				fmt.Printf("[DEBUG-CONNECT] Original destination matches Host header: %s\n", r.Host)
 			}
 		} else {
 			s.logger.DebugWithRequestIDf(reqID, "[ORIGINAL-DST] Failed to get original destination: %v", err)
+			fmt.Printf("[DEBUG-CONNECT] Failed to get original destination for client %s: %v\n",
+				clientIP, err)
 		}
+	} else {
+		fmt.Printf("[DEBUG-CONNECT] Connection is not a TCP connection, cannot get original destination\n")
 	}
 
 	// Store the destination information for this client IP
