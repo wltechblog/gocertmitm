@@ -834,6 +834,15 @@ func (t *Tester) GetNextTestByIP(ip string) certificates.TestType {
 	// If we found a domain, use it to get the next test
 	if exists {
 		t.logger.Debugf("[IP-GROUP] Using domain %s for IP %s", domain, ip)
+
+		// Check if the domain has a status that indicates it should use direct tunnel
+		status, statusExists := t.domains[domain]
+		if statusExists && status.TestsCompleted && !status.SuccessfulTestSet {
+			t.logger.Infof("[TUNNEL] IP %s is associated with domain %s which has completed all tests with no success, using DirectTunnel",
+				ip, domain)
+			return certificates.DirectTunnel
+		}
+
 		// Release the lock before calling GetNextTest which will acquire it again
 		t.mu.RUnlock()
 		result := t.GetNextTest(domain)
@@ -845,6 +854,23 @@ func (t *Tester) GetNextTestByIP(ip string) certificates.TestType {
 	for domain, ips := range t.domainToIPs {
 		if contains(ips, ip) {
 			t.logger.Debugf("[IP-GROUP] Found IP %s in domain %s IP list", ip, domain)
+
+			// Check if the domain has a status that indicates it should use direct tunnel
+			status, statusExists := t.domains[domain]
+			if statusExists && status.TestsCompleted && !status.SuccessfulTestSet {
+				t.logger.Infof("[TUNNEL] IP %s is in IP list for domain %s which has completed all tests with no success, using DirectTunnel",
+					ip, domain)
+
+				// Add to the ipToDomain map for future lookups
+				t.mu.RUnlock() // Release read lock to acquire write lock
+				t.mu.Lock()
+				t.ipToDomain[ip] = domain
+				t.mu.Unlock()
+				t.mu.RLock() // Re-acquire read lock for deferred unlock
+
+				return certificates.DirectTunnel
+			}
+
 			// Add to the ipToDomain map for future lookups
 			t.mu.RUnlock() // Release read lock to acquire write lock
 			t.mu.Lock()
@@ -858,6 +884,13 @@ func (t *Tester) GetNextTestByIP(ip string) certificates.TestType {
 			t.mu.RLock() // Re-acquire the lock for the deferred unlock
 			return result
 		}
+	}
+
+	// Check if the IP itself has a status that indicates it should use direct tunnel
+	status, statusExists := t.domains[ip]
+	if statusExists && status.TestsCompleted && !status.SuccessfulTestSet {
+		t.logger.Infof("[TUNNEL] IP %s has completed all tests with no success, using DirectTunnel", ip)
+		return certificates.DirectTunnel
 	}
 
 	// Otherwise, treat the IP as a domain
@@ -876,9 +909,18 @@ func (t *Tester) ShouldUseTunnelByIP(ip string) bool {
 	// First, try to get the domain for this IP
 	domain, exists := t.ipToDomain[ip]
 
-	// If we found a domain, use it to check if we should use a tunnel
+	// If we found a domain, check if it has completed all tests with no success
 	if exists {
 		t.logger.Debugf("[IP-GROUP] Using domain %s for IP %s tunnel check", domain, ip)
+
+		// Check if the domain has a status that indicates it should use direct tunnel
+		status, statusExists := t.domains[domain]
+		if statusExists && status.TestsCompleted && !status.SuccessfulTestSet {
+			t.logger.Infof("[TUNNEL] IP %s is associated with domain %s which has completed all tests with no success, using direct tunnel",
+				ip, domain)
+			return true
+		}
+
 		// Release the lock before calling ShouldUseTunnel which will acquire it again
 		t.mu.RUnlock()
 		result := t.ShouldUseTunnel(domain)
@@ -890,6 +932,23 @@ func (t *Tester) ShouldUseTunnelByIP(ip string) bool {
 	for domain, ips := range t.domainToIPs {
 		if contains(ips, ip) {
 			t.logger.Debugf("[IP-GROUP] Found IP %s in domain %s IP list for tunnel check", ip, domain)
+
+			// Check if the domain has a status that indicates it should use direct tunnel
+			status, statusExists := t.domains[domain]
+			if statusExists && status.TestsCompleted && !status.SuccessfulTestSet {
+				t.logger.Infof("[TUNNEL] IP %s is in IP list for domain %s which has completed all tests with no success, using direct tunnel",
+					ip, domain)
+
+				// Add to the ipToDomain map for future lookups
+				t.mu.RUnlock() // Release read lock to acquire write lock
+				t.mu.Lock()
+				t.ipToDomain[ip] = domain
+				t.mu.Unlock()
+				t.mu.RLock() // Re-acquire read lock for deferred unlock
+
+				return true
+			}
+
 			// Add to the ipToDomain map for future lookups
 			t.mu.RUnlock() // Release read lock to acquire write lock
 			t.mu.Lock()
@@ -903,6 +962,13 @@ func (t *Tester) ShouldUseTunnelByIP(ip string) bool {
 			t.mu.RLock() // Re-acquire the lock for the deferred unlock
 			return result
 		}
+	}
+
+	// Check if the IP itself has a status that indicates it should use direct tunnel
+	status, statusExists := t.domains[ip]
+	if statusExists && status.TestsCompleted && !status.SuccessfulTestSet {
+		t.logger.Infof("[TUNNEL] IP %s has completed all tests with no success, using direct tunnel", ip)
+		return true
 	}
 
 	// Otherwise, treat the IP as a domain

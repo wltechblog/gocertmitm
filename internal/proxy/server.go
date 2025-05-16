@@ -294,6 +294,20 @@ func (s *Server) getAutoTestCertificateFunc() func(*tls.ClientHelloInfo) (*tls.C
 			}
 		}
 
+		// First, check if this domain or IP is already in the directTunnelDomains map
+		s.directTunnelMu.Lock()
+		isDirectTunnel := s.directTunnelDomains[serverName]
+		if !isDirectTunnel && destIP != "" {
+			isDirectTunnel = s.directTunnelDomains[destIP]
+		}
+		s.directTunnelMu.Unlock()
+
+		if isDirectTunnel {
+			s.logger.InfoWithRequestIDf(reqID, "[TUNNEL] Domain %s or IP %s is already in directTunnelDomains map, using direct tunnel",
+				serverName, destIP)
+			return nil, &DirectTunnelError{Domain: serverName}
+		}
+
 		// Get the next test to try for this domain or IP
 		var testType certificates.TestType
 		if destIP != "" {
