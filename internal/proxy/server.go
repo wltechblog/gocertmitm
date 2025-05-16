@@ -175,6 +175,11 @@ func NewServer(httpAddr, httpsAddr string, certManager *certificates.Manager, lo
 					go func() {
 						server.logger.InfoWithRequestIDf(reqID, "[TUNNEL-TLS-DIRECT] Starting direct tunnel for %s", serverName)
 
+						// IMPORTANT: In direct tunnel mode, we do not inspect or modify any data
+						// We simply establish the outgoing connection and forward packets between
+						// the client and server without any inspection or modification
+						server.logger.InfoWithRequestIDf(reqID, "[TUNNEL-TLS-DIRECT] Pure passthrough mode - no data inspection or modification")
+
 						// Create a WaitGroup to wait for both goroutines to complete
 						var wg sync.WaitGroup
 						wg.Add(2)

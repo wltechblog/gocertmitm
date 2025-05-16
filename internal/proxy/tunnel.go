@@ -437,6 +437,11 @@ func (s *Server) handleDirectTunnel(w http.ResponseWriter, r *http.Request) {
 	// Log that we're starting a pure TCP passthrough tunnel
 	s.logger.InfoWithRequestIDf(reqID, "[TUNNEL] Starting pure TCP passthrough tunnel between client %s and target %s", clientIP, r.Host)
 
+	// IMPORTANT: In direct tunnel mode, we do not inspect or modify any data
+	// We simply establish the outgoing connection and forward packets between
+	// the client and server without any inspection or modification
+	s.logger.InfoWithRequestIDf(reqID, "[TUNNEL] Pure passthrough mode - no data inspection or modification")
+
 	// Create a WaitGroup to wait for both goroutines to complete
 	var wg sync.WaitGroup
 	wg.Add(2)
