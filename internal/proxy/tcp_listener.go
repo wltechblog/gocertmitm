@@ -52,7 +52,21 @@ func (l *DebugListener) Accept() (net.Conn, error) {
 	fmt.Printf("[DEBUG-TCP-ACCEPT] New TCP connection accepted from %s to %s\n",
 		conn.RemoteAddr(), conn.LocalAddr())
 
+	// Extract client IP for logging
+	clientIP, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
+
+	// Create the debug connection with default values
+	debugConn := &DebugConnection{
+		Conn:     conn,
+		server:   l.server,
+		clientIP: clientIP,
+	}
+
 	// Try to get the original destination using SO_ORIGINAL_DST
+	var origDestIP string
+	var origDestPort int
+	var directTunnel bool
+
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
 		fmt.Printf("[DEBUG-TCP-ACCEPT] Attempting to get original destination for connection from %s\n",
 			conn.RemoteAddr())
@@ -86,34 +100,45 @@ func (l *DebugListener) Accept() (net.Conn, error) {
 				// Convert port from network byte order (big endian)
 				port := int(addr.Multiaddr[2])<<8 | int(addr.Multiaddr[3])
 
+				origDestIP = ip.String()
+				origDestPort = port
+
 				fmt.Printf("[DEBUG-TCP-ACCEPT] Original destination: %s:%d for connection from %s\n",
-					ip.String(), port, conn.RemoteAddr())
+					origDestIP, origDestPort, conn.RemoteAddr())
+
+				// Set the original destination on the debug connection
+				debugConn.SetOriginalDestination(origDestIP, origDestPort)
+
+				// Check if this IP is already marked for direct tunnel mode
+				if l.server != nil {
+					l.server.directTunnelMu.Lock()
+					directTunnel = l.server.directTunnelDomains[origDestIP]
+					l.server.directTunnelMu.Unlock()
+
+					if directTunnel {
+						fmt.Printf("[DEBUG-TCP-ACCEPT] Original destination IP %s is marked for direct tunnel mode\n", origDestIP)
+						debugConn.SetDirectTunnel(true)
+					}
+				}
 			}
 		}
 	} else {
 		fmt.Printf("[DEBUG-TCP-ACCEPT] Connection is not a TCP connection, cannot get original destination\n")
 	}
 
-	// Extract client IP for logging
-	clientIP, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
-
-	// Wrap the connection to add more debugging
-	// We don't know the domain or request ID yet, so we'll set them to empty strings
-	// They can be updated later when we have more information
-	return &DebugConnection{
-		Conn:     conn,
-		server:   l.server,
-		clientIP: clientIP,
-	}, nil
+	return debugConn, nil
 }
 
 // DebugConnection is a wrapper around net.Conn that logs read/write operations
 type DebugConnection struct {
 	net.Conn
-	server   *Server // Reference to the server instance
-	domain   string  // Domain being accessed
-	clientIP string  // Client IP address
-	reqID    string  // Request ID for logging
+	server       *Server // Reference to the server instance
+	domain       string  // Domain being accessed
+	clientIP     string  // Client IP address
+	reqID        string  // Request ID for logging
+	directTunnel bool    // Flag indicating if this connection should use direct tunnel mode
+	origDestIP   string  // Original destination IP address
+	origDestPort int     // Original destination port
 }
 
 // Read reads data from the connection and logs it
@@ -218,4 +243,30 @@ func (c *DebugConnection) SetRequestID(reqID string) {
 		fmt.Printf("[DEBUG-TCP-REQID] Setting request ID for connection %s to %s\n", c.Conn.RemoteAddr(), reqID)
 		c.reqID = reqID
 	}
+}
+
+// SetDirectTunnel marks this connection for direct tunnel mode
+func (c *DebugConnection) SetDirectTunnel(directTunnel bool) {
+	if c.directTunnel != directTunnel {
+		fmt.Printf("[DEBUG-TCP-TUNNEL] Setting direct tunnel mode for connection %s to %v\n", c.Conn.RemoteAddr(), directTunnel)
+		c.directTunnel = directTunnel
+	}
+}
+
+// IsDirectTunnel returns whether this connection should use direct tunnel mode
+func (c *DebugConnection) IsDirectTunnel() bool {
+	return c.directTunnel
+}
+
+// SetOriginalDestination sets the original destination IP and port for this connection
+func (c *DebugConnection) SetOriginalDestination(ip string, port int) {
+	c.origDestIP = ip
+	c.origDestPort = port
+	fmt.Printf("[DEBUG-TCP-ORIGDST] Setting original destination for connection %s to %s:%d\n",
+		c.Conn.RemoteAddr(), ip, port)
+}
+
+// GetOriginalDestination returns the original destination IP and port for this connection
+func (c *DebugConnection) GetOriginalDestination() (string, int) {
+	return c.origDestIP, c.origDestPort
 }

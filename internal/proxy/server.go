@@ -369,6 +369,28 @@ func (s *Server) getAutoTestCertificateFunc() func(*tls.ClientHelloInfo) (*tls.C
 
 			// If this is a DebugConnection, set the domain and client IP
 			if debugConn, ok := clientHello.Conn.(*DebugConnection); ok {
+				// Check if this connection is already marked for direct tunnel mode
+				if debugConn.IsDirectTunnel() {
+					// This connection is already marked for direct tunnel mode
+					// We should return a special error to prevent TLS handshake
+					fmt.Printf("[DEBUG-TLS-HELLO] Connection %s is marked for direct tunnel mode, skipping TLS handshake\n",
+						clientHello.Conn.RemoteAddr())
+
+					// Get the original destination IP
+					origDestIP, _ := debugConn.GetOriginalDestination()
+
+					// Make sure this domain and IP are in the direct tunnel map
+					s.directTunnelMu.Lock()
+					s.directTunnelDomains[serverName] = true
+					if origDestIP != "" {
+						s.directTunnelDomains[origDestIP] = true
+					}
+					s.directTunnelMu.Unlock()
+
+					// Return a special error that will be recognized by the TLS error handler
+					return nil, &DirectTunnelError{Domain: serverName}
+				}
+
 				debugConn.SetDomain(serverName)
 				debugConn.SetClientIP(clientIP)
 
@@ -771,6 +793,36 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	for name, values := range r.Header {
 		for _, value := range values {
 			fmt.Printf("[DEBUG-CONNECT-HEADERS]   %s: %s\n", name, value)
+		}
+	}
+
+	// Check if the client connection is a DebugConnection and if it's marked for direct tunnel mode
+	if hijacker, ok := w.(http.Hijacker); ok {
+		clientConn, _, hijackErr := hijacker.Hijack()
+		if hijackErr == nil {
+			if debugConn, ok := clientConn.(*DebugConnection); ok {
+				if debugConn.IsDirectTunnel() {
+					// This connection is already marked for direct tunnel mode
+					fmt.Printf("[DEBUG-CONNECT] Connection from %s is marked for direct tunnel mode, using direct tunnel\n",
+						clientIP)
+
+					// Get the original destination IP and port
+					origDestIP, origDestPort := debugConn.GetOriginalDestination()
+
+					if origDestIP != "" {
+						// Update the request host to use the original destination
+						r.Host = fmt.Sprintf("%s:%d", origDestIP, origDestPort)
+						fmt.Printf("[DEBUG-CONNECT] Using original destination %s for direct tunnel\n", r.Host)
+					}
+
+					// Use direct tunnel for this connection
+					s.handleDirectTunnel(w, r)
+					return
+				}
+			}
+
+			// If we're not using direct tunnel mode, close the connection so it can be hijacked again later
+			clientConn.Close()
 		}
 	}
 
