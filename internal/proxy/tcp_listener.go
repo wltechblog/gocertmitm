@@ -113,6 +113,28 @@ func (l *DebugListener) Accept() (net.Conn, error) {
 					for domain := range l.server.directTunnelDomains {
 						fmt.Printf("[DEBUG-TCP-ACCEPT-DIRECT]   %s\n", domain)
 					}
+
+					// Check if we have a domain for this IP in the ipToDomain map
+					if l.server.tester != nil {
+						domain := l.server.tester.GetDomainByIP(origDestIP)
+						if domain != "" {
+							fmt.Printf("[DEBUG-TCP-ACCEPT-DIRECT] Found domain %s for IP %s\n", domain, origDestIP)
+
+							// Check if this domain is marked for direct tunnel
+							if !directTunnel {
+								directTunnel = l.server.directTunnelDomains[domain]
+								fmt.Printf("[DEBUG-TCP-ACCEPT-DIRECT] Checking if domain %s is marked for direct tunnel: %v\n",
+									domain, directTunnel)
+
+								// If the domain is marked for direct tunnel, also mark the IP
+								if directTunnel {
+									l.server.directTunnelDomains[origDestIP] = true
+									fmt.Printf("[DEBUG-TCP-ACCEPT-DIRECT] Marking IP %s for direct tunnel based on domain %s\n",
+										origDestIP, domain)
+								}
+							}
+						}
+					}
 					l.server.directTunnelMu.Unlock()
 
 					if directTunnel {
@@ -447,6 +469,21 @@ func (l *DirectTunnelListener) Accept() (net.Conn, error) {
 	fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER] Current directTunnelDomains map contents:\n")
 	for domain := range l.server.directTunnelDomains {
 		fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER]   %s\n", domain)
+	}
+
+	// If the IP is not marked for direct tunnel, check if we have a domain for this connection
+	// that is marked for direct tunnel
+	if !directTunnel && debugConn.domain != "" {
+		directTunnel = l.server.directTunnelDomains[debugConn.domain]
+		fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER] Checking if domain %s is marked for direct tunnel: %v\n",
+			debugConn.domain, directTunnel)
+
+		// If the domain is marked for direct tunnel, also mark the IP for future connections
+		if directTunnel && origDestIP != "" {
+			l.server.directTunnelDomains[origDestIP] = true
+			fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER] Marking IP %s for direct tunnel mode based on domain %s\n",
+				origDestIP, debugConn.domain)
+		}
 	}
 	l.server.directTunnelMu.Unlock()
 
