@@ -1079,14 +1079,36 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer clientConn.Close()
 		defer targetConn.Close()
-		copyData(targetConn, clientConn, reqID, hostWithoutPort, s)
+
+		// Copy data from target to client
+		err := copyData(targetConn, clientConn, reqID, hostWithoutPort, s)
+
+		// Check for connection reset
+		if err != nil && (strings.Contains(err.Error(), "connection reset by peer") ||
+			strings.Contains(err.Error(), "broken pipe") ||
+			strings.Contains(err.Error(), "write: broken pipe")) {
+			// Handle connection reset as a test failure
+			s.HandleConnectionReset(clientIP, hostWithoutPort)
+		}
+
 		s.logger.DebugWithRequestIDf(reqID, "Finished proxying data from target %s to client %s", r.Host, clientIP)
 	}()
 
 	go func() {
 		defer clientConn.Close()
 		defer targetConn.Close()
-		copyData(clientConn, targetConn, reqID, hostWithoutPort, s)
+
+		// Copy data from client to target
+		err := copyData(clientConn, targetConn, reqID, hostWithoutPort, s)
+
+		// Check for connection reset
+		if err != nil && (strings.Contains(err.Error(), "connection reset by peer") ||
+			strings.Contains(err.Error(), "broken pipe") ||
+			strings.Contains(err.Error(), "write: broken pipe")) {
+			// Handle connection reset as a test failure
+			s.HandleConnectionReset(clientIP, hostWithoutPort)
+		}
+
 		s.logger.DebugWithRequestIDf(reqID, "Finished proxying data from client %s to target %s", clientIP, r.Host)
 	}()
 }
@@ -1327,4 +1349,55 @@ func getClientIP(r *http.Request) string {
 // isIPAddress checks if a string is an IP address
 func isIPAddress(s string) bool {
 	return net.ParseIP(s) != nil
+}
+
+// HandleConnectionReset records a connection reset as a test failure
+// This is called when a client resets the connection during a TLS handshake
+func (s *Server) HandleConnectionReset(clientIP, domain string) {
+	// Get a request ID for this connection
+	reqID := s.logger.GetRequestID(clientIP, domain)
+
+	// Check if this domain is in the direct tunnel map
+	s.directTunnelMu.Lock()
+	isDirectTunnel := s.directTunnelDomains[domain]
+	s.directTunnelMu.Unlock()
+
+	if isDirectTunnel {
+		// This is a direct tunnel connection, so we should ignore connection resets
+		s.logger.DebugWithRequestIDf(reqID, "[CONN-RESET] Ignoring connection reset for domain %s as it's in direct tunnel mode", domain)
+		return
+	}
+
+	// Get the current test type for this domain
+	testType := s.tester.GetNextTest(domain)
+
+	// Check if the current test type is DirectTunnel
+	if testType == certificates.DirectTunnel {
+		// We're already in direct tunnel mode, so we should ignore this error
+		s.logger.DebugWithRequestIDf(reqID, "[CONN-RESET] Ignoring connection reset for domain %s as test type is DirectTunnel", domain)
+		return
+	}
+
+	// Get the domain test status before recording the failure
+	domainStatus := s.tester.GetTestStatus(domain)
+	if domainStatus != nil {
+		s.logger.DebugWithRequestIDf(reqID, "[DOMAIN] Before connection reset - Domain %s status: CurrentTestIndex=%d, TestsCompleted=%v, SuccessfulTestSet=%v",
+			domain, domainStatus.CurrentTestIndex, domainStatus.TestsCompleted, domainStatus.SuccessfulTestSet)
+	}
+
+	// Record the connection reset as a handshake failure
+	s.logger.InfoWithRequestIDf(reqID, "[CONN-RESET] Connection reset from %s for %s with test type %s - treating as handshake failure",
+		clientIP, domain, testType.GetTestTypeName())
+
+	// Record the failure and get the next test type
+	nextTest := s.RecordFailedHandshake(domain, testType, reqID)
+
+	// Get the domain test status after recording the failure
+	domainStatus = s.tester.GetTestStatus(domain)
+	if domainStatus != nil {
+		s.logger.DebugWithRequestIDf(reqID, "[DOMAIN] After connection reset - Domain %s status: CurrentTestIndex=%d, TestsCompleted=%v, SuccessfulTestSet=%v",
+			domain, domainStatus.CurrentTestIndex, domainStatus.TestsCompleted, domainStatus.SuccessfulTestSet)
+	}
+
+	s.logger.InfoWithRequestIDf(reqID, "[NEXT] Moving to next test for %s after connection reset: %s", domain, nextTest.GetTestTypeName())
 }

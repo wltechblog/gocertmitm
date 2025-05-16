@@ -11,7 +11,8 @@ import (
 
 // copyData copies data between two connections with an inactivity timeout
 // It's used for regular MITM connections
-func copyData(dst, src net.Conn, reqID string, domain string, server *Server) {
+// Returns an error if the connection was reset or closed unexpectedly
+func copyData(dst, src net.Conn, reqID string, domain string, server *Server) error {
 	defer dst.Close()
 	defer src.Close()
 
@@ -23,6 +24,9 @@ func copyData(dst, src net.Conn, reqID string, domain string, server *Server) {
 
 	// Create a channel to signal when the connection should be closed due to inactivity
 	closeConn := make(chan struct{}, 1)
+
+	// Variable to store the last error encountered
+	var lastErr error
 
 	// Start a goroutine to monitor for inactivity
 	go func() {
@@ -73,7 +77,7 @@ func copyData(dst, src net.Conn, reqID string, domain string, server *Server) {
 		// Check if we should close due to inactivity
 		select {
 		case <-closeConn:
-			return
+			return lastErr
 		default:
 			// Continue with normal operation
 		}
@@ -95,20 +99,22 @@ func copyData(dst, src net.Conn, reqID string, domain string, server *Server) {
 			_, writeErr := dst.Write(buf[:n])
 			if writeErr != nil {
 				// Write error
-				return
+				lastErr = writeErr
+				return writeErr
 			}
 		}
 
 		if err != nil {
 			if err == io.EOF {
 				// Normal end of connection
-				return
+				return nil
 			} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				// This is just our read deadline - continue the loop
 				continue
 			} else {
 				// Other read error
-				return
+				lastErr = err
+				return err
 			}
 		}
 	}

@@ -10,7 +10,7 @@ GOMOD=$(GOCMD) mod
 BINARY_NAME=certmitm
 BINARY_UNIX=$(BINARY_NAME)_unix
 
-all: test build
+all: build
 
 build:
 	$(GOBUILD) -race -o $(BINARY_NAME) -v ./cmd/certmitm

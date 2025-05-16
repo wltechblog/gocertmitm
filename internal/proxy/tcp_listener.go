@@ -3,6 +3,7 @@ package proxy
 import (
 	"fmt"
 	"net"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -35,12 +36,12 @@ func (l *DebugListener) Accept() (net.Conn, error) {
 	}
 
 	// Log the connection immediately
-	fmt.Printf("[DEBUG-TCP-ACCEPT] New TCP connection accepted from %s to %s\n", 
+	fmt.Printf("[DEBUG-TCP-ACCEPT] New TCP connection accepted from %s to %s\n",
 		conn.RemoteAddr(), conn.LocalAddr())
 
 	// Try to get the original destination using SO_ORIGINAL_DST
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		fmt.Printf("[DEBUG-TCP-ACCEPT] Attempting to get original destination for connection from %s\n", 
+		fmt.Printf("[DEBUG-TCP-ACCEPT] Attempting to get original destination for connection from %s\n",
 			conn.RemoteAddr())
 
 		// Get the file descriptor
@@ -51,7 +52,7 @@ func (l *DebugListener) Accept() (net.Conn, error) {
 			defer file.Close()
 
 			fd := int(file.Fd())
-			fmt.Printf("[DEBUG-TCP-ACCEPT] Got file descriptor %d for connection from %s\n", 
+			fmt.Printf("[DEBUG-TCP-ACCEPT] Got file descriptor %d for connection from %s\n",
 				fd, conn.RemoteAddr())
 
 			// Get original destination using SO_ORIGINAL_DST socket option
@@ -72,7 +73,7 @@ func (l *DebugListener) Accept() (net.Conn, error) {
 				// Convert port from network byte order (big endian)
 				port := int(addr.Multiaddr[2])<<8 | int(addr.Multiaddr[3])
 
-				fmt.Printf("[DEBUG-TCP-ACCEPT] Original destination: %s:%d for connection from %s\n", 
+				fmt.Printf("[DEBUG-TCP-ACCEPT] Original destination: %s:%d for connection from %s\n",
 					ip.String(), port, conn.RemoteAddr())
 			}
 		}
@@ -96,6 +97,18 @@ func (c *DebugConnection) Read(b []byte) (n int, err error) {
 	n, err = c.Conn.Read(b)
 	if err != nil && err != net.ErrClosed {
 		fmt.Printf("[DEBUG-TCP-READ] Error reading from %s: %v\n", c.Conn.RemoteAddr(), err)
+
+		// Check for connection reset by peer or broken pipe
+		if strings.Contains(err.Error(), "connection reset by peer") ||
+			strings.Contains(err.Error(), "broken pipe") {
+			// Try to extract the server from the connection context
+			// This is a best-effort attempt to find the domain being tested
+			// We need to find a way to get the Server instance here
+
+			// For now, we'll just log it and rely on the tlsErrorLogger to handle it
+			fmt.Printf("[DEBUG-TCP-READ] Connection reset detected for %s - this should be treated as a test failure\n",
+				c.Conn.RemoteAddr())
+		}
 	} else if n > 0 {
 		fmt.Printf("[DEBUG-TCP-READ] Read %d bytes from %s\n", n, c.Conn.RemoteAddr())
 	}
@@ -107,6 +120,15 @@ func (c *DebugConnection) Write(b []byte) (n int, err error) {
 	n, err = c.Conn.Write(b)
 	if err != nil {
 		fmt.Printf("[DEBUG-TCP-WRITE] Error writing to %s: %v\n", c.Conn.RemoteAddr(), err)
+
+		// Check for connection reset by peer or broken pipe
+		if strings.Contains(err.Error(), "connection reset by peer") ||
+			strings.Contains(err.Error(), "broken pipe") ||
+			strings.Contains(err.Error(), "write: broken pipe") {
+			// Log the connection reset
+			fmt.Printf("[DEBUG-TCP-WRITE] Connection reset detected for %s - this should be treated as a test failure\n",
+				c.Conn.RemoteAddr())
+		}
 	} else if n > 0 {
 		fmt.Printf("[DEBUG-TCP-WRITE] Wrote %d bytes to %s\n", n, c.Conn.RemoteAddr())
 	}

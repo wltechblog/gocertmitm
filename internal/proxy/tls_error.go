@@ -25,8 +25,10 @@ func (l *tlsErrorLogger) Write(p []byte) (n int, err error) {
 		return len(p), nil
 	}
 
-	// Check if this is a TLS handshake error
-	if strings.Contains(msg, "TLS handshake error") {
+	// Check if this is a TLS handshake error or connection reset
+	if strings.Contains(msg, "TLS handshake error") ||
+		strings.Contains(msg, "connection reset by peer") ||
+		strings.Contains(msg, "broken pipe") {
 		// Extract the client IP
 		ipRe := regexp.MustCompile(`from ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)`)
 		ipMatches := ipRe.FindStringSubmatch(msg)
