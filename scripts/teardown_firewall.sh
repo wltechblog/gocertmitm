@@ -34,7 +34,9 @@ if [ ! -f "$ORIGINAL_RULES_FILE" ]; then
 
   # Remove the specific rules we added
   echo "Removing DNAT rules..."
-  iptables -t nat -D PREROUTING -p tcp --dport 443 ! -s 127.0.0.1 ! -s $LOCAL_IP -j DNAT --to-destination $PROXY_IP:$PROXY_PORT 2>/dev/null
+  iptables -t nat -D PREROUTING -p tcp --dport 443 -j DNAT --to-destination $PROXY_IP:$PROXY_PORT 2>/dev/null
+  iptables -t nat -D PREROUTING -p tcp --dport 443 -s $LOCAL_IP -j RETURN 2>/dev/null
+  iptables -t nat -D PREROUTING -p tcp --dport 443 -s 127.0.0.1 -j RETURN 2>/dev/null
 
   echo "Removing MASQUERADE rules..."
   if [ ! -z "$PRIMARY_INTERFACE" ]; then

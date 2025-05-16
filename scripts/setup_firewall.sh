@@ -55,8 +55,12 @@ iptables -t nat -A POSTROUTING -o $PRIMARY_INTERFACE -j MASQUERADE
 
 # Use DNAT to redirect only routed HTTPS traffic to the proxy (not local traffic)
 echo "Setting up DNAT for routed HTTPS traffic only..."
-# Exclude both loopback and the local IP address from being redirected
-iptables -t nat -A PREROUTING -p tcp --dport 443 ! -s 127.0.0.1 ! -s $LOCAL_IP -j DNAT --to-destination $PROXY_IP:$PROXY_PORT
+# Create a source network range to exclude local traffic
+# We'll use a proper approach with one source match and iprange module
+echo "Excluding local IPs: 127.0.0.1 and $LOCAL_IP"
+iptables -t nat -A PREROUTING -p tcp --dport 443 -s 127.0.0.1 -j RETURN
+iptables -t nat -A PREROUTING -p tcp --dport 443 -s $LOCAL_IP -j RETURN
+iptables -t nat -A PREROUTING -p tcp --dport 443 -j DNAT --to-destination $PROXY_IP:$PROXY_PORT
 
 # Note: We're not redirecting locally-generated HTTPS traffic as per requirements
 
