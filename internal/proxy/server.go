@@ -272,6 +272,19 @@ func (s *Server) getAutoTestCertificateFunc() func(*tls.ClientHelloInfo) (*tls.C
 		clientIP := "unknown"
 		if clientHello.Conn != nil {
 			clientIP, _, _ = net.SplitHostPort(clientHello.Conn.RemoteAddr().String())
+
+			// If this is a DebugConnection, set the domain and client IP
+			if debugConn, ok := clientHello.Conn.(*DebugConnection); ok {
+				debugConn.SetDomain(serverName)
+				debugConn.SetClientIP(clientIP)
+
+				// Set the request ID as well
+				reqID := s.logger.GetRequestID(clientIP, serverName)
+				debugConn.SetRequestID(reqID)
+
+				fmt.Printf("[DEBUG-TLS-HELLO] Set domain %s and client IP %s on connection %s\n",
+					serverName, clientIP, clientHello.Conn.RemoteAddr())
+			}
 		}
 
 		// Add to recent domains list
@@ -1131,6 +1144,16 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	// Get a request ID for this connection
 	reqID = s.logger.GetRequestID(clientIP, hostWithoutPort)
+
+	// If this is a DebugConnection, set the domain and client IP
+	if debugConn, ok := clientConn.(*DebugConnection); ok {
+		debugConn.SetDomain(hostWithoutPort)
+		debugConn.SetClientIP(clientIP)
+		debugConn.SetRequestID(reqID)
+
+		fmt.Printf("[DEBUG-CONNECT] Set domain %s and client IP %s on connection %s\n",
+			hostWithoutPort, clientIP, clientConn.RemoteAddr())
+	}
 
 	go func() {
 		defer clientConn.Close()

@@ -195,3 +195,27 @@ func (c *DebugConnection) SetReadDeadline(t time.Time) error {
 func (c *DebugConnection) SetWriteDeadline(t time.Time) error {
 	return c.Conn.SetWriteDeadline(t)
 }
+
+// SetDomain sets the domain for this connection
+func (c *DebugConnection) SetDomain(domain string) {
+	if domain != "" && c.domain != domain {
+		fmt.Printf("[DEBUG-TCP-DOMAIN] Setting domain for connection %s to %s\n", c.Conn.RemoteAddr(), domain)
+		c.domain = domain
+	}
+}
+
+// SetClientIP sets the client IP for this connection
+func (c *DebugConnection) SetClientIP(clientIP string) {
+	if clientIP != "" && c.clientIP != clientIP {
+		fmt.Printf("[DEBUG-TCP-CLIENT] Setting client IP for connection %s to %s\n", c.Conn.RemoteAddr(), clientIP)
+		c.clientIP = clientIP
+	}
+}
+
+// SetRequestID sets the request ID for this connection
+func (c *DebugConnection) SetRequestID(reqID string) {
+	if reqID != "" && c.reqID != reqID {
+		fmt.Printf("[DEBUG-TCP-REQID] Setting request ID for connection %s to %s\n", c.Conn.RemoteAddr(), reqID)
+		c.reqID = reqID
+	}
+}

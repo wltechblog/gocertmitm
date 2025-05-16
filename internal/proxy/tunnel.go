@@ -279,6 +279,16 @@ func (s *Server) handleDirectTunnel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// If this is a DebugConnection, set the domain and client IP
+	if debugConn, ok := clientConn.(*DebugConnection); ok {
+		debugConn.SetDomain(hostWithoutPort)
+		debugConn.SetClientIP(clientIP)
+		debugConn.SetRequestID(reqID)
+
+		fmt.Printf("[DEBUG-DIRECT-TUNNEL] Set domain %s and client IP %s on connection %s\n",
+			hostWithoutPort, clientIP, clientConn.RemoteAddr())
+	}
+
 	// Try to get the original destination using SO_ORIGINAL_DST
 	// This is useful for transparent proxy mode
 	var originalDest *OriginalDestination
