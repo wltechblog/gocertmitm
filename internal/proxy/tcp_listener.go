@@ -413,17 +413,27 @@ func (l *DirectTunnelListener) Accept() (net.Conn, error) {
 		return nil, err
 	}
 
+	fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER-ACCEPT] Accepted connection from %s to %s\n",
+		conn.RemoteAddr(), conn.LocalAddr())
+
 	// Check if this is a DebugConnection
 	debugConn, ok := conn.(*DebugConnection)
 	if !ok {
 		// If it's not a DebugConnection, just return it as-is
+		fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER-ACCEPT] Connection is not a DebugConnection, returning as-is\n")
 		return conn, nil
 	}
 
+	fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER-ACCEPT] Connection is a DebugConnection\n")
+
 	// Get the original destination IP and port
 	origDestIP, origDestPort := debugConn.GetOriginalDestination()
+	fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER-ACCEPT] Original destination: %s:%d\n",
+		origDestIP, origDestPort)
+
 	if origDestIP == "" {
 		// If we don't have an original destination, just return the connection as-is
+		fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER-ACCEPT] No original destination, returning connection as-is\n")
 		return conn, nil
 	}
 

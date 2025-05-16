@@ -134,6 +134,74 @@ func NewServer(httpAddr, httpsAddr string, certManager *certificates.Manager, lo
 		Addr:    httpsAddr,
 		Handler: httpsHandler,
 		TLSConfig: &tls.Config{
+			GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+				// Get the server name from the client hello
+				serverName := hello.ServerName
+				if serverName == "" {
+					serverName = "default.example.com"
+				}
+
+				// Get client IP (for logging)
+				if hello.Conn != nil {
+					clientIP, _, _ := net.SplitHostPort(hello.Conn.RemoteAddr().String())
+					fmt.Printf("[DEBUG-TLS-CONFIG] Client IP: %s, Server Name: %s\n", clientIP, serverName)
+				}
+
+				// Check if this is a DebugConnection
+				if debugConn, ok := hello.Conn.(*DebugConnection); ok {
+					// Check if this connection is marked for direct tunnel mode
+					if debugConn.IsDirectTunnel() {
+						fmt.Printf("[DEBUG-TLS-CONFIG] Connection %s is marked for direct tunnel mode, skipping TLS handshake\n",
+							hello.Conn.RemoteAddr())
+
+						// Return nil to indicate that we don't want to proceed with TLS
+						return nil, fmt.Errorf("direct tunnel mode - skipping TLS handshake")
+					}
+
+					// Get the original destination IP
+					origDestIP, _ := debugConn.GetOriginalDestination()
+
+					// Check if this IP is already marked for direct tunnel mode
+					server.directTunnelMu.Lock()
+					isDirectTunnel := server.directTunnelDomains[origDestIP]
+					server.directTunnelMu.Unlock()
+
+					if isDirectTunnel {
+						fmt.Printf("[DEBUG-TLS-CONFIG] Original destination IP %s is marked for direct tunnel mode, skipping TLS handshake\n",
+							origDestIP)
+
+						// Return nil to indicate that we don't want to proceed with TLS
+						return nil, fmt.Errorf("direct tunnel mode - skipping TLS handshake")
+					}
+				}
+
+				// If we're not in direct tunnel mode, return the default TLS config
+				return &tls.Config{
+					GetCertificate: func(clientHello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+						// If auto-testing is enabled, use the auto-test certificate function
+						if server.autoTest {
+							return server.getAutoTestCertificateFunc()(clientHello)
+						}
+						// Otherwise, use the standard certificate function
+						return server.certManager.GetCertificateFunc(server.testType)(clientHello)
+					},
+					MinVersion:         tls.VersionTLS12,
+					InsecureSkipVerify: false,            // We want clients to validate our certificates
+					ClientAuth:         tls.NoClientCert, // Don't require client certificates
+					CipherSuites: []uint16{
+						tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+						tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+						tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+						tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+						tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
+						tls.TLS_RSA_WITH_AES_128_GCM_SHA256,
+						tls.TLS_RSA_WITH_AES_256_CBC_SHA,
+						tls.TLS_RSA_WITH_AES_128_CBC_SHA,
+					},
+					PreferServerCipherSuites: true,
+				}, nil
+			},
+			// We still need a GetCertificate function for backward compatibility
 			GetCertificate: func(clientHello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 				// Get the server name from the client hello
 				serverName := clientHello.ServerName
@@ -251,6 +319,14 @@ func (s *Server) Start() error {
 		Listener: httpsListener,
 		server:   s,
 	}
+
+	// Log the current direct tunnel domains map
+	s.directTunnelMu.Lock()
+	fmt.Printf("[DEBUG-SERVER-START] Current directTunnelDomains map contents:\n")
+	for domain := range s.directTunnelDomains {
+		fmt.Printf("[DEBUG-SERVER-START]   %s\n", domain)
+	}
+	s.directTunnelMu.Unlock()
 
 	// Start HTTPS server with direct tunnel listener
 	s.logger.Infof("Starting HTTPS proxy on %s", s.httpsAddr)
