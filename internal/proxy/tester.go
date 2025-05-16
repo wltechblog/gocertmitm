@@ -205,13 +205,28 @@ func (t *Tester) GetNextTest(domain string) certificates.TestType {
 			AttemptCount:     make(map[certificates.TestType]int),
 		}
 		t.domains[domain] = status
-		t.logger.Infof("[DOMAIN] Starting tests for new domain/IP: %s (stored as %s)", domain, domainToUse)
-		t.logger.Debugf("[DOMAIN] New domain/IP %s - using test %s (index 0)",
+
+		// Extract client IP from domain if possible (for request ID)
+		clientIP := "unknown"
+		if parts := strings.Split(domain, ":"); len(parts) > 1 {
+			clientIP = parts[0]
+		} else {
+			// If domain is an IP address, use it as the client IP
+			if net.ParseIP(domain) != nil {
+				clientIP = domain
+			}
+		}
+
+		// Get a request ID for this domain
+		reqID := t.logger.GetRequestID(clientIP, domain)
+
+		t.logger.InfoWithRequestIDf(reqID, "[DOMAIN] Starting tests for new domain/IP: %s (stored as %s)", domain, domainToUse)
+		t.logger.DebugWithRequestIDf(reqID, "[DOMAIN] New domain/IP %s - using test %s (index 0)",
 			domain, t.testOrder[0].GetTestTypeName())
 
 		// Save the updated domain results to JSON
 		if err := t.SaveToJSON(); err != nil {
-			t.logger.Errorf("[ERROR] Failed to save domain results to JSON: %v", err)
+			t.logger.ErrorWithRequestIDf(reqID, "[ERROR] Failed to save domain results to JSON: %v", err)
 		}
 
 		return t.testOrder[0]
@@ -219,71 +234,99 @@ func (t *Tester) GetNextTest(domain string) certificates.TestType {
 
 	// Check if we need to retest
 	if time.Since(status.LastTested) > t.retestPeriod {
-		t.logger.Infof("[DOMAIN] Retesting domain after %s: %s", t.retestPeriod, domain)
+		// Extract client IP from domain if possible (for request ID)
+		clientIP := "unknown"
+		if parts := strings.Split(domain, ":"); len(parts) > 1 {
+			clientIP = parts[0]
+		} else {
+			// If domain is an IP address, use it as the client IP
+			if net.ParseIP(domain) != nil {
+				clientIP = domain
+			}
+		}
+
+		// Get a request ID for this domain
+		reqID := t.logger.GetRequestID(clientIP, domain)
+
+		t.logger.InfoWithRequestIDf(reqID, "[DOMAIN] Retesting domain after %s: %s", t.retestPeriod, domain)
 		status.CurrentTestIndex = 0
 		status.TestResults = make(map[certificates.TestType]bool)
 		status.TestsCompleted = false
 		status.SuccessfulTestSet = false
 		status.AttemptCount = make(map[certificates.TestType]int)
 		status.LastTested = time.Now()
-		t.logger.Debugf("[DOMAIN] Retest for domain %s - using test %s (index 0)",
+		t.logger.DebugWithRequestIDf(reqID, "[DOMAIN] Retest for domain %s - using test %s (index 0)",
 			domain, t.testOrder[0].GetTestTypeName())
 
 		// Save the updated domain results to JSON
 		if err := t.SaveToJSON(); err != nil {
-			t.logger.Errorf("[ERROR] Failed to save domain results to JSON: %v", err)
+			t.logger.ErrorWithRequestIDf(reqID, "[ERROR] Failed to save domain results to JSON: %v", err)
 		}
 
 		return t.testOrder[0]
 	}
 
+	// Extract client IP from domain if possible (for request ID)
+	clientIP := "unknown"
+	if parts := strings.Split(domain, ":"); len(parts) > 1 {
+		clientIP = parts[0]
+	} else {
+		// If domain is an IP address, use it as the client IP
+		if net.ParseIP(domain) != nil {
+			clientIP = domain
+		}
+	}
+
+	// Get a request ID for this domain
+	reqID := t.logger.GetRequestID(clientIP, domain)
+
 	// If we already have a successful test, use it
 	if status.SuccessfulTestSet {
-		t.logger.Debugf("[TEST] Domain %s has successful test: %s",
+		t.logger.DebugWithRequestIDf(reqID, "[TEST] Domain %s has successful test: %s",
 			domain, status.SuccessfulTest.GetTestTypeName())
 		return status.SuccessfulTest
 	}
 
 	// If all tests are completed and none succeeded, return DirectTunnel
 	if status.TestsCompleted && !status.SuccessfulTestSet {
-		t.logger.Infof("[TUNNEL] Domain %s has completed all tests with no success, using DirectTunnel", domain)
+		t.logger.InfoWithRequestIDf(reqID, "[TUNNEL] Domain %s has completed all tests with no success, using DirectTunnel", domain)
 
 		// Make sure this domain is in the direct tunnel map
 		// This is a safety check to ensure we always use direct tunnel when all tests have failed
-		t.logger.Infof("[TUNNEL] Adding %s to direct tunnel domains map", domain)
+		t.logger.InfoWithRequestIDf(reqID, "[TUNNEL] Adding %s to direct tunnel domains map", domain)
 
 		// Reset the current test index to ensure we don't try to use an invalid test
 		status.CurrentTestIndex = 0
 
 		// Log this with a special tag to make it easier to track
-		t.logger.Infof("[DIRECT-TUNNEL-DECISION] Domain %s should use direct tunnel mode - all tests completed with no success", domain)
+		t.logger.InfoWithRequestIDf(reqID, "[DIRECT-TUNNEL-DECISION] Domain %s should use direct tunnel mode - all tests completed with no success", domain)
 
 		return certificates.DirectTunnel
 	}
 
 	// Double-check that the current test index is valid
 	if status.CurrentTestIndex >= len(t.testOrder) {
-		t.logger.Infof("[TEST-WARN] Domain %s has CurrentTestIndex=%d which is out of bounds (max=%d), resetting to 0",
+		t.logger.InfoWithRequestIDf(reqID, "[TEST-WARN] Domain %s has CurrentTestIndex=%d which is out of bounds (max=%d), resetting to 0",
 			domain, status.CurrentTestIndex, len(t.testOrder)-1)
 		status.CurrentTestIndex = 0
 
 		// If we've already tried all tests, mark as completed and use direct tunnel
 		if status.TestsCompleted && !status.SuccessfulTestSet {
-			t.logger.Infof("[TUNNEL] Domain %s has invalid test index and all tests completed with no success, using DirectTunnel", domain)
+			t.logger.InfoWithRequestIDf(reqID, "[TUNNEL] Domain %s has invalid test index and all tests completed with no success, using DirectTunnel", domain)
 			return certificates.DirectTunnel
 		}
 	}
 
 	// Validate the current test index
 	if status.CurrentTestIndex < 0 || status.CurrentTestIndex >= len(t.testOrder) {
-		t.logger.Errorf("[ERROR] Invalid CurrentTestIndex %d for domain %s, resetting to 0",
+		t.logger.ErrorWithRequestIDf(reqID, "[ERROR] Invalid CurrentTestIndex %d for domain %s, resetting to 0",
 			status.CurrentTestIndex, domain)
 		status.CurrentTestIndex = 0
 	}
 
 	// Return the current test
 	currentTest := t.testOrder[status.CurrentTestIndex]
-	t.logger.Debugf("[TEST] Domain %s - using current test %s (index %d)",
+	t.logger.DebugWithRequestIDf(reqID, "[TEST] Domain %s - using current test %s (index %d)",
 		domain, currentTest.GetTestTypeName(), status.CurrentTestIndex)
 	return currentTest
 }
@@ -293,19 +336,33 @@ func (t *Tester) RecordTestResult(domain string, testType certificates.TestType,
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	// Extract client IP from domain if possible (for request ID)
+	clientIP := "unknown"
+	if parts := strings.Split(domain, ":"); len(parts) > 1 {
+		clientIP = parts[0]
+	} else {
+		// If domain is an IP address, use it as the client IP
+		if net.ParseIP(domain) != nil {
+			clientIP = domain
+		}
+	}
+
+	// Get a request ID for this domain
+	reqID := t.logger.GetRequestID(clientIP, domain)
+
 	status, exists := t.domains[domain]
 	if !exists {
-		t.logger.Errorf("[ERROR] Trying to record result for unknown domain: %s", domain)
+		t.logger.ErrorWithRequestIDf(reqID, "[ERROR] Trying to record result for unknown domain: %s", domain)
 		return testType
 	}
 
 	// Log the current domain status for debugging
-	t.logger.Debugf("[TEST-DEBUG] RecordTestResult for domain %s - CurrentTestIndex=%d, TestsCompleted=%v, SuccessfulTestSet=%v, TestType=%s, Success=%v",
+	t.logger.DebugWithRequestIDf(reqID, "[TEST-DEBUG] RecordTestResult for domain %s - CurrentTestIndex=%d, TestsCompleted=%v, SuccessfulTestSet=%v, TestType=%s, Success=%v",
 		domain, status.CurrentTestIndex, status.TestsCompleted, status.SuccessfulTestSet, testType.GetTestTypeName(), success)
 
 	// If we're already in direct tunnel mode, don't record any more results
 	if status.TestsCompleted && !status.SuccessfulTestSet {
-		t.logger.Infof("[TUNNEL] Domain %s has already completed all tests with no success, ignoring new test result and using DirectTunnel", domain)
+		t.logger.InfoWithRequestIDf(reqID, "[TUNNEL] Domain %s has already completed all tests with no success, ignoring new test result and using DirectTunnel", domain)
 		return certificates.DirectTunnel
 	}
 
@@ -316,18 +373,18 @@ func (t *Tester) RecordTestResult(domain string, testType certificates.TestType,
 	status.AttemptCount[testType]++
 
 	// Log the result with attempt count
-	t.logger.Infof("[TEST] Result for %s with %s: %v (Attempt %d)",
+	t.logger.InfoWithRequestIDf(reqID, "[TEST] Result for %s with %s: %v (Attempt %d)",
 		domain, testType.GetTestTypeName(), success, status.AttemptCount[testType])
 
 	// If the test was successful, remember it and return the same test
 	if success {
 		status.SuccessfulTest = testType
 		status.SuccessfulTestSet = true
-		t.logger.Infof("[SUCCESS] Found successful test for %s: %s", domain, testType.GetTestTypeName())
+		t.logger.InfoWithRequestIDf(reqID, "[SUCCESS] Found successful test for %s: %s", domain, testType.GetTestTypeName())
 
 		// Save the updated domain results to JSON
 		if err := t.SaveToJSON(); err != nil {
-			t.logger.Errorf("[ERROR] Failed to save domain results to JSON: %v", err)
+			t.logger.ErrorWithRequestIDf(reqID, "[ERROR] Failed to save domain results to JSON: %v", err)
 		}
 
 		return testType
@@ -336,21 +393,67 @@ func (t *Tester) RecordTestResult(domain string, testType certificates.TestType,
 	// If we've tried this test type too many times, move to the next test
 	// This prevents getting stuck on a test type that keeps failing
 	if status.AttemptCount[testType] >= t.maxAttempts {
-		t.logger.Infof("[MAX-ATTEMPTS] Reached maximum attempts (%d) for %s with test type %s - moving to next test",
+		t.logger.InfoWithRequestIDf(reqID, "[MAX-ATTEMPTS] Reached maximum attempts (%d) for %s with test type %s - forcing move to next test",
 			t.maxAttempts, domain, testType.GetTestTypeName())
+
+		// Find the index of the current test type
+		currentIndex := -1
+		for i, test := range t.testOrder {
+			if test == testType {
+				currentIndex = i
+				break
+			}
+		}
+
+		// If found, set the current index to the next test
+		if currentIndex != -1 {
+			// Set to the next test index
+			status.CurrentTestIndex = currentIndex + 1
+
+			// If we've reached the end of the test order, mark as completed
+			if status.CurrentTestIndex >= len(t.testOrder) {
+				status.TestsCompleted = true
+				status.CurrentTestIndex = 0 // Reset to 0 to avoid index out of bounds errors
+				t.logger.InfoWithRequestIDf(reqID, "[COMPLETE] All tests completed for %s, no successful tests found", domain)
+
+				// Log connection summary for direct tunnel mode
+				t.logger.LogConnectionSummary(clientIP, domain, "", false, true)
+
+				// Save the updated domain results to JSON
+				if err := t.SaveToJSON(); err != nil {
+					t.logger.ErrorWithRequestIDf(reqID, "[ERROR] Failed to save domain results to JSON: %v", err)
+				}
+
+				return certificates.DirectTunnel // Special value indicating direct tunnel
+			}
+
+			// Return the next test type
+			nextTest := t.testOrder[status.CurrentTestIndex]
+			t.logger.InfoWithRequestIDf(reqID, "[NEXT] Moving to next test for %s due to max attempts: %s",
+				domain, nextTest.GetTestTypeName())
+
+			// Save the updated domain results to JSON
+			if err := t.SaveToJSON(); err != nil {
+				t.logger.ErrorWithRequestIDf(reqID, "[ERROR] Failed to save domain results to JSON: %v", err)
+			}
+
+			return nextTest
+		}
 	}
+
+	// If we're still here, we haven't reached max attempts yet, so continue with normal processing
 
 	// Verify that the current test type matches the one we're recording a result for
 	// This ensures we're incrementing the correct test
 	if status.CurrentTestIndex < 0 || status.CurrentTestIndex >= len(t.testOrder) {
-		t.logger.Infof("[TEST-WARN] CurrentTestIndex %d is out of bounds for domain %s, resetting to 0",
+		t.logger.InfoWithRequestIDf(reqID, "[TEST-WARN] CurrentTestIndex %d is out of bounds for domain %s, resetting to 0",
 			status.CurrentTestIndex, domain)
 		status.CurrentTestIndex = 0
 	}
 
 	currentTest := t.testOrder[status.CurrentTestIndex]
 	if currentTest != testType {
-		t.logger.Debugf("[TEST] Warning: Recording failure for %s but current test is %s (index %d)",
+		t.logger.DebugWithRequestIDf(reqID, "[TEST] Warning: Recording failure for %s but current test is %s (index %d)",
 			testType.GetTestTypeName(), currentTest.GetTestTypeName(), status.CurrentTestIndex)
 
 		// Find the index of the test type we're recording a result for
@@ -363,7 +466,7 @@ func (t *Tester) RecordTestResult(domain string, testType certificates.TestType,
 		}
 
 		if foundIndex != -1 {
-			t.logger.Debugf("[TEST] Found test %s at index %d, updating CurrentTestIndex",
+			t.logger.DebugWithRequestIDf(reqID, "[TEST] Found test %s at index %d, updating CurrentTestIndex",
 				testType.GetTestTypeName(), foundIndex)
 			status.CurrentTestIndex = foundIndex
 		}
@@ -371,28 +474,22 @@ func (t *Tester) RecordTestResult(domain string, testType certificates.TestType,
 
 	// Move to the next test
 	status.CurrentTestIndex++
-	t.logger.Debugf("[TEST] Incremented CurrentTestIndex to %d for domain %s", status.CurrentTestIndex, domain)
+	t.logger.DebugWithRequestIDf(reqID, "[TEST] Incremented CurrentTestIndex to %d for domain %s", status.CurrentTestIndex, domain)
 
 	// If we've tried all tests, mark as completed
 	if status.CurrentTestIndex >= len(t.testOrder) {
 		status.TestsCompleted = true
 		status.CurrentTestIndex = 0 // Reset to 0 to avoid index out of bounds errors
-		t.logger.Infof("[COMPLETE] All tests completed for %s, no successful tests found", domain)
+		t.logger.InfoWithRequestIDf(reqID, "[COMPLETE] All tests completed for %s, no successful tests found", domain)
 
 		// Save the updated domain results to JSON
 		if err := t.SaveToJSON(); err != nil {
-			t.logger.Errorf("[ERROR] Failed to save domain results to JSON: %v", err)
+			t.logger.ErrorWithRequestIDf(reqID, "[ERROR] Failed to save domain results to JSON: %v", err)
 		}
 
 		// Log the final state of the domain
-		t.logger.Infof("[DOMAIN-FINAL] Domain %s final status: TestsCompleted=%v, SuccessfulTestSet=%v",
+		t.logger.InfoWithRequestIDf(reqID, "[DOMAIN-FINAL] Domain %s final status: TestsCompleted=%v, SuccessfulTestSet=%v",
 			domain, status.TestsCompleted, status.SuccessfulTestSet)
-
-		// Extract client IP from domain if possible (for connection summary)
-		clientIP := "unknown"
-		if parts := strings.Split(domain, ":"); len(parts) > 1 {
-			clientIP = parts[0]
-		}
 
 		// Log connection summary for direct tunnel mode
 		t.logger.LogConnectionSummary(clientIP, domain, "", false, true)
@@ -402,11 +499,11 @@ func (t *Tester) RecordTestResult(domain string, testType certificates.TestType,
 
 	// Return the next test
 	nextTest := t.testOrder[status.CurrentTestIndex]
-	t.logger.Infof("[NEXT] Moving to next test for %s: %s", domain, nextTest.GetTestTypeName())
+	t.logger.InfoWithRequestIDf(reqID, "[NEXT] Moving to next test for %s: %s", domain, nextTest.GetTestTypeName())
 
 	// Save the updated domain results to JSON
 	if err := t.SaveToJSON(); err != nil {
-		t.logger.Errorf("[ERROR] Failed to save domain results to JSON: %v", err)
+		t.logger.ErrorWithRequestIDf(reqID, "[ERROR] Failed to save domain results to JSON: %v", err)
 	}
 
 	return nextTest
@@ -417,18 +514,32 @@ func (t *Tester) ShouldUseTunnel(domain string) bool {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
+	// Extract client IP from domain if possible (for request ID)
+	clientIP := "unknown"
+	if parts := strings.Split(domain, ":"); len(parts) > 1 {
+		clientIP = parts[0]
+	} else {
+		// If domain is an IP address, use it as the client IP
+		if net.ParseIP(domain) != nil {
+			clientIP = domain
+		}
+	}
+
+	// Get a request ID for this domain
+	reqID := t.logger.GetRequestID(clientIP, domain)
+
 	// Check if this is an IP address
 	isIP := net.ParseIP(domain) != nil
 
 	// Skip invalid domains, but allow IP addresses
 	if !isIP && !isValidDomain(domain) {
-		t.logger.Debugf("[DOMAIN] Skipping invalid domain: %s", domain)
+		t.logger.DebugWithRequestIDf(reqID, "[DOMAIN] Skipping invalid domain: %s", domain)
 		return false
 	}
 
 	status, exists := t.domains[domain]
 	if !exists {
-		t.logger.Debugf("[TUNNEL] No test status for domain %s, not using tunnel", domain)
+		t.logger.DebugWithRequestIDf(reqID, "[TUNNEL] No test status for domain %s, not using tunnel", domain)
 		return false // Haven't tested yet, so don't use tunnel
 	}
 
@@ -436,24 +547,18 @@ func (t *Tester) ShouldUseTunnel(domain string) bool {
 	shouldUseTunnel := status.TestsCompleted && !status.SuccessfulTestSet
 
 	if shouldUseTunnel {
-		t.logger.Infof("[TUNNEL] Using direct tunnel for %s - all tests completed with no success", domain)
+		t.logger.InfoWithRequestIDf(reqID, "[TUNNEL] Using direct tunnel for %s - all tests completed with no success", domain)
 
 		// Make sure this domain is in the direct tunnel map
 		// This is a safety check to ensure we always use direct tunnel when all tests have failed
-		t.logger.Infof("[TUNNEL] Adding %s to direct tunnel domains map", domain)
-
-		// Extract client IP from domain if possible (for connection summary)
-		clientIP := "unknown"
-		if parts := strings.Split(domain, ":"); len(parts) > 1 {
-			clientIP = parts[0]
-		}
+		t.logger.InfoWithRequestIDf(reqID, "[TUNNEL] Adding %s to direct tunnel domains map", domain)
 
 		// Log connection summary for direct tunnel mode
 		t.logger.LogConnectionSummary(clientIP, domain, "", false, true)
 	} else if status.TestsCompleted {
-		t.logger.Debugf("[TUNNEL] Not using tunnel for %s - tests completed with success", domain)
+		t.logger.DebugWithRequestIDf(reqID, "[TUNNEL] Not using tunnel for %s - tests completed with success", domain)
 	} else {
-		t.logger.Debugf("[TUNNEL] Not using tunnel for %s - tests not completed yet (index: %d)",
+		t.logger.DebugWithRequestIDf(reqID, "[TUNNEL] Not using tunnel for %s - tests not completed yet (index: %d)",
 			domain, status.CurrentTestIndex)
 	}
 
