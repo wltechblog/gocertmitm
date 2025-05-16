@@ -9,7 +9,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -136,49 +135,133 @@ func NewServer(httpAddr, httpsAddr string, certManager *certificates.Manager, lo
 		Handler: httpsHandler,
 		TLSConfig: &tls.Config{
 			GetCertificate: func(clientHello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+				// Get the server name from the client hello
+				serverName := clientHello.ServerName
+				if serverName == "" {
+					serverName = "default.example.com"
+				}
+
+				// Get client IP
+				clientIP := "unknown"
+				if clientHello.Conn != nil {
+					clientIP, _, _ = net.SplitHostPort(clientHello.Conn.RemoteAddr().String())
+				}
+
+				// Get a request ID for this connection
+				reqID := server.logger.GetRequestID(clientIP, serverName)
+
+				// First, check if this domain is already in the directTunnelDomains map
+				server.directTunnelMu.Lock()
+				isDirectTunnel := server.directTunnelDomains[serverName]
+				server.directTunnelMu.Unlock()
+
+				if isDirectTunnel {
+					server.logger.InfoWithRequestIDf(reqID, "[TUNNEL-TLS] Domain %s is in directTunnelDomains map, using direct tunnel", serverName)
+
+					// This is a direct tunnel request, so we need to handle it specially
+					// We'll establish a direct tunnel without any certificate handling
+
+					// Get the client connection
+					conn := clientHello.Conn
+
+					// Create a TCP connection to the target server
+					targetConn, err := net.DialTimeout("tcp", net.JoinHostPort(serverName, "443"), 30*time.Second)
+					if err != nil {
+						server.logger.ErrorWithRequestIDf(reqID, "[ERROR] Failed to connect to target %s: %v", serverName, err)
+						return nil, err
+					}
+
+					// Start a goroutine to handle the direct tunnel
+					go func() {
+						server.logger.InfoWithRequestIDf(reqID, "[TUNNEL-TLS-DIRECT] Starting direct tunnel for %s", serverName)
+
+						// Create a WaitGroup to wait for both goroutines to complete
+						var wg sync.WaitGroup
+						wg.Add(2)
+
+						// Forward data from client to target
+						go func() {
+							defer wg.Done()
+							defer targetConn.Close()
+
+							// Use a large buffer for better performance
+							buf := make([]byte, 64*1024)
+
+							// Simple io.Copy loop without any deadlines or protocol inspection
+							for {
+								// Read from client without any deadline
+								n, err := conn.Read(buf)
+								if n > 0 {
+									// Write to target immediately without any processing
+									_, writeErr := targetConn.Write(buf[:n])
+									if writeErr != nil {
+										server.logger.DebugWithRequestIDf(reqID, "[TUNNEL-DIRECT] Write error to target: %v", writeErr)
+										return
+									}
+								}
+
+								if err != nil {
+									if err != io.EOF {
+										server.logger.DebugWithRequestIDf(reqID, "[TUNNEL-DIRECT] Read error from client: %v", err)
+									}
+									return
+								}
+							}
+						}()
+
+						// Forward data from target to client
+						go func() {
+							defer wg.Done()
+							defer conn.Close()
+
+							// Use a large buffer for better performance
+							buf := make([]byte, 64*1024)
+
+							// Simple io.Copy loop without any deadlines or protocol inspection
+							for {
+								// Read from target without any deadline
+								n, err := targetConn.Read(buf)
+								if n > 0 {
+									// Write to client immediately without any processing
+									_, writeErr := conn.Write(buf[:n])
+									if writeErr != nil {
+										server.logger.DebugWithRequestIDf(reqID, "[TUNNEL-DIRECT] Write error to client: %v", writeErr)
+										return
+									}
+								}
+
+								if err != nil {
+									if err != io.EOF {
+										server.logger.DebugWithRequestIDf(reqID, "[TUNNEL-DIRECT] Read error from target: %v", err)
+									}
+									return
+								}
+							}
+						}()
+
+						// Wait for both goroutines to complete
+						wg.Wait()
+						server.logger.InfoWithRequestIDf(reqID, "[TUNNEL-DIRECT] Direct tunnel between client %s and target %s completed", clientIP, serverName)
+					}()
+
+					// Return an error to prevent the TLS handshake from continuing
+					return nil, fmt.Errorf("direct tunnel established for %s", serverName)
+				}
+
 				// If auto-testing is enabled, use the auto-test certificate function
 				if server.autoTest {
 					cert, err := server.getAutoTestCertificateFunc()(clientHello)
 					if err != nil {
 						// Check if this is a DirectTunnelError
 						if dtErr, ok := err.(*DirectTunnelError); ok {
-							// This is a direct tunnel request, so we need to handle it specially
-							// We'll create a fake connection to the HTTPS server that will be handled by handleDirectTunnel
-							server.logger.Infof("[TUNNEL-TLS] DirectTunnelError for %s - initiating direct tunnel", dtErr.Domain)
+							// Add this domain to the direct tunnel map
+							server.directTunnelMu.Lock()
+							server.directTunnelDomains[dtErr.Domain] = true
+							server.directTunnelMu.Unlock()
 
-							// Get the client connection
-							conn := clientHello.Conn
-
-							// Create a fake HTTP request for the direct tunnel handler
-							req := &http.Request{
-								Method: "CONNECT",
-								Host:   dtErr.Domain + ":443", // Add port 443 for HTTPS
-								URL: &url.URL{
-									Host: dtErr.Domain,
-									Path: "/",
-								},
-								Proto:      "HTTP/1.1",
-								ProtoMajor: 1,
-								ProtoMinor: 1,
-								Header:     make(http.Header),
-								RemoteAddr: conn.RemoteAddr().String(),
-							}
-
-							// Create a fake response writer that will be hijacked
-							w := &directTunnelResponseWriter{
-								conn: conn,
-							}
-
-							// Handle the direct tunnel in a goroutine to avoid blocking
-							go func() {
-								server.logger.Infof("[TUNNEL-TLS] Starting direct tunnel for %s", dtErr.Domain)
-								server.handleDirectTunnel(w, req)
-							}()
-
-							// Return a dummy certificate to satisfy the TLS handshake
-							// This certificate will never be used because we're hijacking the connection
-							dummyCert, _ := server.certManager.GetCertificate("dummy.example.com", certificates.SelfSigned)
-							return dummyCert, nil
+							// Return an error to prevent the TLS handshake from continuing
+							// The next connection will use the direct tunnel path above
+							return nil, fmt.Errorf("direct tunnel requested for %s - reconnect to use direct tunnel", dtErr.Domain)
 						}
 
 						// For other errors, return them as-is
