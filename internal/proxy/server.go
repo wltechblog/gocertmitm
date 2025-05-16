@@ -246,10 +246,16 @@ func (s *Server) Start() error {
 		}
 	}()
 
-	// Start HTTPS server with debug listener
+	// Create a direct tunnel listener that wraps the HTTPS listener
+	directTunnelListener := &DirectTunnelListener{
+		Listener: httpsListener,
+		server:   s,
+	}
+
+	// Start HTTPS server with direct tunnel listener
 	s.logger.Infof("Starting HTTPS proxy on %s", s.httpsAddr)
 	fmt.Printf("[DEBUG-SERVER] Starting HTTPS proxy on %s\n", s.httpsAddr)
-	if err := s.httpsServer.ServeTLS(httpsListener, "", ""); err != nil && err != http.ErrServerClosed {
+	if err := s.httpsServer.ServeTLS(directTunnelListener, "", ""); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("HTTPS server error: %v", err)
 	}
 

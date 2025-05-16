@@ -105,6 +105,14 @@ func (l *DebugListener) Accept() (net.Conn, error) {
 				if l.server != nil {
 					l.server.directTunnelMu.Lock()
 					directTunnel := l.server.directTunnelDomains[origDestIP]
+					fmt.Printf("[DEBUG-TCP-ACCEPT-DIRECT] Checking if IP %s is marked for direct tunnel: %v\n",
+						origDestIP, directTunnel)
+
+					// Also check if we have any domains in the directTunnelDomains map
+					fmt.Printf("[DEBUG-TCP-ACCEPT-DIRECT] Current directTunnelDomains map contents:\n")
+					for domain := range l.server.directTunnelDomains {
+						fmt.Printf("[DEBUG-TCP-ACCEPT-DIRECT]   %s\n", domain)
+					}
 					l.server.directTunnelMu.Unlock()
 
 					if directTunnel {
@@ -267,6 +275,23 @@ func (c *DebugConnection) Write(b []byte) (n int, err error) {
 		return c.Conn.Write(b)
 	}
 
+	// Log the data being written for debugging
+	if len(b) <= 20 {
+		// For small writes, log the actual bytes
+		fmt.Printf("[DEBUG-TCP-WRITE-DATA] Writing %d bytes to %s: %v\n", len(b), c.Conn.RemoteAddr(), b)
+
+		// Also try to interpret as ASCII
+		asciiStr := ""
+		for _, byt := range b {
+			if byt >= 32 && byt <= 126 {
+				asciiStr += string(byt)
+			} else {
+				asciiStr += "."
+			}
+		}
+		fmt.Printf("[DEBUG-TCP-WRITE-ASCII] ASCII interpretation: %s\n", asciiStr)
+	}
+
 	n, err = c.Conn.Write(b)
 	if err != nil {
 		fmt.Printf("[DEBUG-TCP-WRITE] Error writing to %s: %v\n", c.Conn.RemoteAddr(), err)
@@ -371,6 +396,130 @@ func (c *DebugConnection) SetOriginalDestination(ip string, port int) {
 // GetOriginalDestination returns the original destination IP and port for this connection
 func (c *DebugConnection) GetOriginalDestination() (string, int) {
 	return c.origDestIP, c.origDestPort
+}
+
+// DirectTunnelListener is a wrapper around net.Listener that handles direct tunnel connections
+// It checks if the original destination IP is marked for direct tunnel mode and handles it directly
+type DirectTunnelListener struct {
+	net.Listener
+	server *Server // Reference to the server instance
+}
+
+// Accept accepts a connection and checks if it should be handled as a direct tunnel
+func (l *DirectTunnelListener) Accept() (net.Conn, error) {
+	// Accept the connection from the underlying listener
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+
+	// Check if this is a DebugConnection
+	debugConn, ok := conn.(*DebugConnection)
+	if !ok {
+		// If it's not a DebugConnection, just return it as-is
+		return conn, nil
+	}
+
+	// Get the original destination IP and port
+	origDestIP, origDestPort := debugConn.GetOriginalDestination()
+	if origDestIP == "" {
+		// If we don't have an original destination, just return the connection as-is
+		return conn, nil
+	}
+
+	// Check if this IP is already marked for direct tunnel mode
+	l.server.directTunnelMu.Lock()
+	directTunnel := l.server.directTunnelDomains[origDestIP]
+
+	// Log the direct tunnel domains map for debugging
+	fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER] Checking if IP %s is marked for direct tunnel: %v\n",
+		origDestIP, directTunnel)
+	fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER] Current directTunnelDomains map contents:\n")
+	for domain := range l.server.directTunnelDomains {
+		fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER]   %s\n", domain)
+	}
+	l.server.directTunnelMu.Unlock()
+
+	if directTunnel {
+		// This connection should use direct tunnel mode
+		fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER] Original destination IP %s is marked for direct tunnel mode\n", origDestIP)
+		fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER] Using direct TCP tunnel for connection from %s to %s:%d\n",
+			debugConn.clientIP, origDestIP, origDestPort)
+
+		// Get a request ID for this connection
+		reqID := l.server.logger.GetRequestID(debugConn.clientIP, origDestIP)
+
+		// Log that we're starting a direct TCP tunnel
+		l.server.logger.InfoWithRequestIDf(reqID, "[TUNNEL-TCP-DIRECT] Starting direct TCP tunnel from %s to %s:%d",
+			debugConn.clientIP, origDestIP, origDestPort)
+
+		// Create a destination string for logging and dialing
+		destAddr := net.JoinHostPort(origDestIP, strconv.Itoa(origDestPort))
+
+		// Connect directly to the target server
+		fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER] Connecting to %s\n", destAddr)
+		targetConn, err := net.DialTimeout("tcp", destAddr, 30*time.Second)
+		if err != nil {
+			l.server.logger.ErrorWithRequestIDf(reqID, "[ERROR] Failed to connect to target %s: %v", destAddr, err)
+			fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER] Connection failed to %s: %v\n", destAddr, err)
+			conn.Close()
+
+			// Return a dummy connection to prevent the HTTP server from exiting with an error
+			return &DummyConnection{
+				clientAddr: conn.RemoteAddr(),
+				localAddr:  conn.LocalAddr(),
+			}, nil
+		}
+
+		fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER] Successfully connected to %s (local: %s, remote: %s)\n",
+			destAddr, targetConn.LocalAddr(), targetConn.RemoteAddr())
+
+		// Log that we're starting a pure TCP passthrough tunnel
+		l.server.logger.InfoWithRequestIDf(reqID, "[TUNNEL-TCP-DIRECT] Starting pure TCP passthrough tunnel between client %s and target %s",
+			debugConn.clientIP, destAddr)
+
+		// IMPORTANT: In direct tunnel mode, we do not inspect or modify any data
+		l.server.logger.InfoWithRequestIDf(reqID, "[TUNNEL-TCP-DIRECT] Pure passthrough mode - no data inspection or modification")
+
+		// Start a goroutine to handle the direct tunnel
+		go func() {
+			defer conn.Close()
+			defer targetConn.Close()
+
+			// Create a WaitGroup to wait for both copy operations to complete
+			var wg sync.WaitGroup
+			wg.Add(2)
+
+			// Copy from client to target
+			go func() {
+				defer wg.Done()
+				io.Copy(targetConn, conn)
+			}()
+
+			// Copy from target to client
+			go func() {
+				defer wg.Done()
+				io.Copy(conn, targetConn)
+			}()
+
+			// Wait for both copy operations to complete
+			wg.Wait()
+
+			l.server.logger.InfoWithRequestIDf(reqID, "[TUNNEL-TCP-DIRECT] Direct TCP tunnel closed between %s and %s",
+				debugConn.clientIP, destAddr)
+			fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER] Direct TCP tunnel closed between %s and %s\n",
+				debugConn.clientIP, destAddr)
+		}()
+
+		// Return a dummy connection to prevent the HTTP server from exiting with an error
+		return &DummyConnection{
+			clientAddr: conn.RemoteAddr(),
+			localAddr:  conn.LocalAddr(),
+		}, nil
+	}
+
+	// If this connection is not marked for direct tunnel mode, just return it as-is
+	return conn, nil
 }
 
 // DummyConnection is a dummy connection that does nothing
