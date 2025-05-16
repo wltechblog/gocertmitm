@@ -2,8 +2,11 @@ package proxy
 
 import (
 	"fmt"
+	"io"
 	"net"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -55,17 +58,9 @@ func (l *DebugListener) Accept() (net.Conn, error) {
 	// Extract client IP for logging
 	clientIP, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
 
-	// Create the debug connection with default values
-	debugConn := &DebugConnection{
-		Conn:     conn,
-		server:   l.server,
-		clientIP: clientIP,
-	}
-
 	// Try to get the original destination using SO_ORIGINAL_DST
 	var origDestIP string
 	var origDestPort int
-	var directTunnel bool
 
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
 		fmt.Printf("[DEBUG-TCP-ACCEPT] Attempting to get original destination for connection from %s\n",
@@ -106,13 +101,10 @@ func (l *DebugListener) Accept() (net.Conn, error) {
 				fmt.Printf("[DEBUG-TCP-ACCEPT] Original destination: %s:%d for connection from %s\n",
 					origDestIP, origDestPort, conn.RemoteAddr())
 
-				// Set the original destination on the debug connection
-				debugConn.SetOriginalDestination(origDestIP, origDestPort)
-
 				// Check if this IP is already marked for direct tunnel mode
 				if l.server != nil {
 					l.server.directTunnelMu.Lock()
-					directTunnel = l.server.directTunnelDomains[origDestIP]
+					directTunnel := l.server.directTunnelDomains[origDestIP]
 					l.server.directTunnelMu.Unlock()
 
 					if directTunnel {
@@ -120,22 +112,89 @@ func (l *DebugListener) Accept() (net.Conn, error) {
 						fmt.Printf("[DEBUG-TCP-ACCEPT] Using direct TCP tunnel for connection from %s to %s:%d\n",
 							clientIP, origDestIP, origDestPort)
 
-						// Set the direct tunnel flag on the connection
-						debugConn.SetDirectTunnel(true)
+						// IMPORTANT: For direct tunnel mode, we handle the connection directly here
+						// and do not return it to the HTTP server
 
-						// Start a goroutine to handle the direct tunnel
-						// This allows us to return the connection to the HTTP server
-						// but also handle it directly at the TCP level
+						// Create a destination string for logging and dialing
+						destAddr := net.JoinHostPort(origDestIP, strconv.Itoa(origDestPort))
+
+						// Get a request ID for this connection
+						reqID := l.server.logger.GetRequestID(clientIP, origDestIP)
+
+						// Log that we're starting a direct TCP tunnel
+						l.server.logger.InfoWithRequestIDf(reqID, "[TUNNEL-TCP-DIRECT] Starting direct TCP tunnel from %s to %s", clientIP, destAddr)
+						fmt.Printf("[DEBUG-DIRECT-TUNNEL-TCP-DIRECT] Starting direct TCP tunnel from %s to %s\n", clientIP, destAddr)
+
+						// Connect directly to the target server
+						fmt.Printf("[DEBUG-DIRECT-TUNNEL-TCP-DIRECT] Connecting to %s\n", destAddr)
+						targetConn, err := net.DialTimeout("tcp", destAddr, 30*time.Second)
+						if err != nil {
+							l.server.logger.ErrorWithRequestIDf(reqID, "[ERROR] Failed to connect to target %s: %v", destAddr, err)
+							fmt.Printf("[DEBUG-DIRECT-TUNNEL-TCP-DIRECT] Connection failed to %s: %v\n", destAddr, err)
+							conn.Close()
+
+							// Return a special error to indicate that we've handled this connection
+							return nil, fmt.Errorf("direct tunnel connection handled")
+						}
+
+						fmt.Printf("[DEBUG-DIRECT-TUNNEL-TCP-DIRECT] Successfully connected to %s (local: %s, remote: %s)\n",
+							destAddr, targetConn.LocalAddr(), targetConn.RemoteAddr())
+
+						// Log that we're starting a pure TCP passthrough tunnel
+						l.server.logger.InfoWithRequestIDf(reqID, "[TUNNEL-TCP-DIRECT] Starting pure TCP passthrough tunnel between client %s and target %s",
+							clientIP, destAddr)
+
+						// IMPORTANT: In direct tunnel mode, we do not inspect or modify any data
+						l.server.logger.InfoWithRequestIDf(reqID, "[TUNNEL-TCP-DIRECT] Pure passthrough mode - no data inspection or modification")
+
+						// Use io.Copy for simple, efficient bidirectional copying
 						go func() {
-							// Use the handleDirectTunnelTCP method to create a direct tunnel
-							l.server.handleDirectTunnelTCP(debugConn, origDestIP, origDestPort)
+							defer conn.Close()
+							defer targetConn.Close()
+
+							// Create a WaitGroup to wait for both copy operations to complete
+							var wg sync.WaitGroup
+							wg.Add(2)
+
+							// Copy from client to target
+							go func() {
+								defer wg.Done()
+								io.Copy(targetConn, conn)
+							}()
+
+							// Copy from target to client
+							go func() {
+								defer wg.Done()
+								io.Copy(conn, targetConn)
+							}()
+
+							// Wait for both copy operations to complete
+							wg.Wait()
+
+							l.server.logger.InfoWithRequestIDf(reqID, "[TUNNEL-TCP-DIRECT] Direct TCP tunnel closed between %s and %s", clientIP, destAddr)
+							fmt.Printf("[DEBUG-DIRECT-TUNNEL-TCP-DIRECT] Direct TCP tunnel closed between %s and %s\n", clientIP, destAddr)
 						}()
+
+						// Return a special error to indicate that we've handled this connection
+						return nil, fmt.Errorf("direct tunnel connection handled")
 					}
 				}
 			}
 		}
 	} else {
 		fmt.Printf("[DEBUG-TCP-ACCEPT] Connection is not a TCP connection, cannot get original destination\n")
+	}
+
+	// Create the debug connection with default values
+	debugConn := &DebugConnection{
+		Conn:     conn,
+		server:   l.server,
+		clientIP: clientIP,
+	}
+
+	// Set the original destination on the debug connection if we have it
+	if origDestIP != "" {
+		debugConn.SetOriginalDestination(origDestIP, origDestPort)
 	}
 
 	return debugConn, nil
