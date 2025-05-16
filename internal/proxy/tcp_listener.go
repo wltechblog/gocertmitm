@@ -133,8 +133,13 @@ func (l *DebugListener) Accept() (net.Conn, error) {
 							fmt.Printf("[DEBUG-DIRECT-TUNNEL-TCP-DIRECT] Connection failed to %s: %v\n", destAddr, err)
 							conn.Close()
 
-							// Return a special error to indicate that we've handled this connection
-							return nil, fmt.Errorf("direct tunnel connection handled")
+							// Instead of returning an error, return a dummy connection that will be ignored by the HTTP server
+							// This prevents the HTTP server from exiting with an error
+							dummyConn := &DummyConnection{
+								clientAddr: conn.RemoteAddr(),
+								localAddr:  conn.LocalAddr(),
+							}
+							return dummyConn, nil
 						}
 
 						fmt.Printf("[DEBUG-DIRECT-TUNNEL-TCP-DIRECT] Successfully connected to %s (local: %s, remote: %s)\n",
@@ -175,8 +180,13 @@ func (l *DebugListener) Accept() (net.Conn, error) {
 							fmt.Printf("[DEBUG-DIRECT-TUNNEL-TCP-DIRECT] Direct TCP tunnel closed between %s and %s\n", clientIP, destAddr)
 						}()
 
-						// Return a special error to indicate that we've handled this connection
-						return nil, fmt.Errorf("direct tunnel connection handled")
+						// Instead of returning an error, return a dummy connection that will be ignored by the HTTP server
+						// This prevents the HTTP server from exiting with an error
+						dummyConn := &DummyConnection{
+							clientAddr: conn.RemoteAddr(),
+							localAddr:  conn.LocalAddr(),
+						}
+						return dummyConn, nil
 					}
 				}
 			}
@@ -361,4 +371,58 @@ func (c *DebugConnection) SetOriginalDestination(ip string, port int) {
 // GetOriginalDestination returns the original destination IP and port for this connection
 func (c *DebugConnection) GetOriginalDestination() (string, int) {
 	return c.origDestIP, c.origDestPort
+}
+
+// DummyConnection is a dummy connection that does nothing
+// It's used to return a connection from Accept when we've already handled the connection
+// This prevents the HTTP server from exiting with an error
+type DummyConnection struct {
+	clientAddr net.Addr
+	localAddr  net.Addr
+}
+
+// Read implements the net.Conn interface
+func (c *DummyConnection) Read(b []byte) (n int, err error) {
+	// Always return EOF to indicate that the connection is closed
+	return 0, io.EOF
+}
+
+// Write implements the net.Conn interface
+func (c *DummyConnection) Write(b []byte) (n int, err error) {
+	// Always return EOF to indicate that the connection is closed
+	return 0, io.EOF
+}
+
+// Close implements the net.Conn interface
+func (c *DummyConnection) Close() error {
+	// Do nothing
+	return nil
+}
+
+// LocalAddr implements the net.Conn interface
+func (c *DummyConnection) LocalAddr() net.Addr {
+	return c.localAddr
+}
+
+// RemoteAddr implements the net.Conn interface
+func (c *DummyConnection) RemoteAddr() net.Addr {
+	return c.clientAddr
+}
+
+// SetDeadline implements the net.Conn interface
+func (c *DummyConnection) SetDeadline(t time.Time) error {
+	// Do nothing
+	return nil
+}
+
+// SetReadDeadline implements the net.Conn interface
+func (c *DummyConnection) SetReadDeadline(t time.Time) error {
+	// Do nothing
+	return nil
+}
+
+// SetWriteDeadline implements the net.Conn interface
+func (c *DummyConnection) SetWriteDeadline(t time.Time) error {
+	// Do nothing
+	return nil
 }
