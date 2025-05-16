@@ -131,17 +131,31 @@ func NewServer(httpAddr, httpsAddr string, certManager *certificates.Manager, lo
 
 // Start starts the proxy server
 func (s *Server) Start() error {
-	// Start HTTP server
+	// Create debug listeners for HTTP and HTTPS
+	httpListener, err := NewDebugListener(s.httpAddr)
+	if err != nil {
+		return fmt.Errorf("failed to create HTTP listener: %v", err)
+	}
+
+	httpsListener, err := NewDebugListener(s.httpsAddr)
+	if err != nil {
+		return fmt.Errorf("failed to create HTTPS listener: %v", err)
+	}
+
+	// Start HTTP server with debug listener
 	go func() {
 		s.logger.Infof("Starting HTTP proxy on %s", s.httpAddr)
-		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		fmt.Printf("[DEBUG-SERVER] Starting HTTP proxy on %s\n", s.httpAddr)
+		if err := s.httpServer.Serve(httpListener); err != nil && err != http.ErrServerClosed {
 			s.logger.Errorf("HTTP server error: %v", err)
+			fmt.Printf("[DEBUG-SERVER] HTTP server error: %v\n", err)
 		}
 	}()
 
-	// Start HTTPS server
+	// Start HTTPS server with debug listener
 	s.logger.Infof("Starting HTTPS proxy on %s", s.httpsAddr)
-	if err := s.httpsServer.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+	fmt.Printf("[DEBUG-SERVER] Starting HTTPS proxy on %s\n", s.httpsAddr)
+	if err := s.httpsServer.ServeTLS(httpsListener, "", ""); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("HTTPS server error: %v", err)
 	}
 
