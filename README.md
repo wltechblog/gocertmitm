@@ -99,6 +99,32 @@ To use GoCertMITM as a man-in-the-middle proxy, you need to:
 2. Redirect HTTPS traffic to the proxy
 3. Configure client devices to use the proxy as their gateway
 
+#### Using the Firewall Setup Scripts
+
+For the Direct Tunnel mechanism to work correctly, the traffic redirection must be done on the same host where the proxy is running. We provide scripts to set up and tear down the necessary firewall rules:
+
+```bash
+# Set up firewall rules (redirects port 443 to localhost:9900)
+sudo ./scripts/setup_firewall.sh
+
+# Start the proxy on port 9900
+./certmitm -listens :9900 -verbose
+
+# When done, tear down the firewall rules
+sudo ./scripts/teardown_firewall.sh
+```
+
+The setup script:
+- Enables IP forwarding
+- Saves the original iptables rules for restoration
+- Adds rules to redirect all port 443 traffic to localhost:9900
+
+The teardown script:
+- Restores the original iptables rules
+- Restores the original IP forwarding setting
+
+**Note**: These scripts require root privileges to modify system settings.
+
 ### Installing the CA Certificate
 
 For proper testing, you need to install the GoCertMITM CA certificate on client devices:
