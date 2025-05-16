@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -202,6 +203,131 @@ func parseTLSClientHello(data []byte) string {
 	}
 
 	return ""
+}
+
+// handleDirectTunnelTCP creates a direct tunnel between the client and the target server at the TCP level
+// This is used when a connection is immediately identified as needing direct tunnel mode
+func (s *Server) handleDirectTunnelTCP(clientConn net.Conn, destIP string, destPort int) {
+	// Get client IP for logging
+	clientIP, _, _ := net.SplitHostPort(clientConn.RemoteAddr().String())
+
+	// Create a destination string for logging and dialing
+	// Use net.JoinHostPort to properly handle IPv6 addresses
+	destAddr := net.JoinHostPort(destIP, strconv.Itoa(destPort))
+
+	// Get a request ID for this connection
+	reqID := s.logger.GetRequestID(clientIP, destIP)
+
+	// Log that we're starting a direct TCP tunnel
+	s.logger.InfoWithRequestIDf(reqID, "[TUNNEL-TCP] Starting direct TCP tunnel from %s to %s", clientIP, destAddr)
+	fmt.Printf("[DEBUG-DIRECT-TUNNEL-TCP] Starting direct TCP tunnel from %s to %s\n", clientIP, destAddr)
+
+	// Connect directly to the target server
+	fmt.Printf("[DEBUG-DIRECT-TUNNEL-TCP] Connecting to %s\n", destAddr)
+	targetConn, err := net.DialTimeout("tcp", destAddr, 30*time.Second)
+	if err != nil {
+		s.logger.ErrorWithRequestIDf(reqID, "[ERROR] Failed to connect to target %s: %v", destAddr, err)
+		fmt.Printf("[DEBUG-DIRECT-TUNNEL-TCP] Connection failed to %s: %v\n", destAddr, err)
+		clientConn.Close()
+		return
+	}
+
+	fmt.Printf("[DEBUG-DIRECT-TUNNEL-TCP] Successfully connected to %s (local: %s, remote: %s)\n",
+		destAddr, targetConn.LocalAddr(), targetConn.RemoteAddr())
+
+	// Log that we're starting a pure TCP passthrough tunnel
+	s.logger.InfoWithRequestIDf(reqID, "[TUNNEL-TCP] Starting pure TCP passthrough tunnel between client %s and target %s",
+		clientIP, destAddr)
+
+	// IMPORTANT: In direct tunnel mode, we do not inspect or modify any data
+	// We simply establish the outgoing connection and forward packets between
+	// the client and server without any inspection or modification
+	s.logger.InfoWithRequestIDf(reqID, "[TUNNEL-TCP] Pure passthrough mode - no data inspection or modification")
+
+	// Create a WaitGroup to wait for both goroutines to complete
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// Simple bidirectional copy without any protocol inspection or deadlines
+	// This is a true passthrough tunnel that just copies bytes in both directions
+
+	// Copy from target to client
+	go func() {
+		defer wg.Done()
+		defer clientConn.Close()
+		defer targetConn.Close()
+
+		// Use a large buffer for better performance
+		buf := make([]byte, 64*1024)
+
+		// Simple io.Copy loop without any deadlines or protocol inspection
+		for {
+			// Read from target without any deadline
+			n, err := targetConn.Read(buf)
+			if n > 0 {
+				// Write to client immediately without any processing
+				_, writeErr := clientConn.Write(buf[:n])
+				if writeErr != nil {
+					s.logger.DebugWithRequestIDf(reqID, "[TUNNEL-TCP] Write error to client: %v", writeErr)
+					return
+				}
+
+				// Log data flow periodically (only for large transfers)
+				if n > 1024 {
+					s.logger.DebugWithRequestIDf(reqID, "[TUNNEL-TCP] Forwarded %d bytes from target to client", n)
+				}
+			}
+
+			if err != nil {
+				if err != io.EOF {
+					s.logger.DebugWithRequestIDf(reqID, "[TUNNEL-TCP] Read error from target: %v", err)
+				}
+				return
+			}
+		}
+	}()
+
+	// Copy from client to target
+	go func() {
+		defer wg.Done()
+		defer clientConn.Close()
+		defer targetConn.Close()
+
+		// Use a large buffer for better performance
+		buf := make([]byte, 64*1024)
+
+		// Simple io.Copy loop without any deadlines or protocol inspection
+		for {
+			// Read from client without any deadline
+			n, err := clientConn.Read(buf)
+			if n > 0 {
+				// Write to target immediately without any processing
+				_, writeErr := targetConn.Write(buf[:n])
+				if writeErr != nil {
+					s.logger.DebugWithRequestIDf(reqID, "[TUNNEL-TCP] Write error to target: %v", writeErr)
+					return
+				}
+
+				// Log data flow periodically (only for large transfers)
+				if n > 1024 {
+					s.logger.DebugWithRequestIDf(reqID, "[TUNNEL-TCP] Forwarded %d bytes from client to target", n)
+				}
+			}
+
+			if err != nil {
+				if err != io.EOF {
+					s.logger.DebugWithRequestIDf(reqID, "[TUNNEL-TCP] Read error from client: %v", err)
+				}
+				return
+			}
+		}
+	}()
+
+	// Wait for both goroutines to complete
+	wg.Wait()
+
+	s.logger.InfoWithRequestIDf(reqID, "[TUNNEL-TCP] Direct TCP tunnel closed between %s and %s", clientIP, destAddr)
+	fmt.Printf("[DEBUG-DIRECT-TUNNEL-TCP] Direct TCP tunnel closed between %s and %s\n", clientIP, destAddr)
 }
 
 // handleDirectTunnel creates a direct tunnel between the client and the target server

@@ -117,7 +117,19 @@ func (l *DebugListener) Accept() (net.Conn, error) {
 
 					if directTunnel {
 						fmt.Printf("[DEBUG-TCP-ACCEPT] Original destination IP %s is marked for direct tunnel mode\n", origDestIP)
+						fmt.Printf("[DEBUG-TCP-ACCEPT] Using direct TCP tunnel for connection from %s to %s:%d\n",
+							clientIP, origDestIP, origDestPort)
+
+						// Set the direct tunnel flag on the connection
 						debugConn.SetDirectTunnel(true)
+
+						// Start a goroutine to handle the direct tunnel
+						// This allows us to return the connection to the HTTP server
+						// but also handle it directly at the TCP level
+						go func() {
+							// Use the handleDirectTunnelTCP method to create a direct tunnel
+							l.server.handleDirectTunnelTCP(debugConn, origDestIP, origDestPort)
+						}()
 					}
 				}
 			}

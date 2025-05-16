@@ -8,6 +8,7 @@
 /certmitm_unix
 bin/
 dist/
+/gocertmitm
 
 # Test binary, built with `go test -c`
 *.test
