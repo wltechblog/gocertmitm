@@ -57,15 +57,16 @@ type Tester struct {
 	testOrder    []certificates.TestType
 	retestPeriod time.Duration
 	jsonFilePath string
+	maxAttempts  int // Maximum number of attempts for each test type
 }
 
-// NewTester creates a new tester with default retry period (1 hour)
+// NewTester creates a new tester with default retry period (1 hour) and max attempts (1)
 func NewTester(logger *logging.Logger, initialTestType certificates.TestType) *Tester {
-	return NewTesterWithRetryPeriod(logger, initialTestType, 1*time.Hour)
+	return NewTesterWithRetryPeriod(logger, initialTestType, 1*time.Hour, 1)
 }
 
-// NewTesterWithRetryPeriod creates a new tester with a custom retry period
-func NewTesterWithRetryPeriod(logger *logging.Logger, initialTestType certificates.TestType, retryPeriod time.Duration) *Tester {
+// NewTesterWithRetryPeriod creates a new tester with a custom retry period and max attempts
+func NewTesterWithRetryPeriod(logger *logging.Logger, initialTestType certificates.TestType, retryPeriod time.Duration, maxAttempts int) *Tester {
 	// Create the test order, starting with the initial test type
 	testOrder := []certificates.TestType{
 		initialTestType,
@@ -85,6 +86,7 @@ func NewTesterWithRetryPeriod(logger *logging.Logger, initialTestType certificat
 
 	logger.Infof("Test order: %v", testOrder)
 	logger.Infof("Retest period: %s", retryPeriod)
+	logger.Infof("Max attempts per test type: %d", maxAttempts)
 
 	// Create the JSON file path
 	jsonFilePath := filepath.Join("./data", "domain_results.json")
@@ -100,6 +102,7 @@ func NewTesterWithRetryPeriod(logger *logging.Logger, initialTestType certificat
 		testOrder:    testOrder,
 		retestPeriod: retryPeriod,
 		jsonFilePath: jsonFilePath,
+		maxAttempts:  maxAttempts,
 	}
 
 	// Load domain results from JSON file
@@ -330,12 +333,11 @@ func (t *Tester) RecordTestResult(domain string, testType certificates.TestType,
 		return testType
 	}
 
-	// If we've tried this test type too many times (5 attempts), move to the next test
+	// If we've tried this test type too many times, move to the next test
 	// This prevents getting stuck on a test type that keeps failing
-	const maxAttempts = 5
-	if status.AttemptCount[testType] >= maxAttempts {
+	if status.AttemptCount[testType] >= t.maxAttempts {
 		t.logger.Infof("[MAX-ATTEMPTS] Reached maximum attempts (%d) for %s with test type %s - moving to next test",
-			maxAttempts, domain, testType.GetTestTypeName())
+			t.maxAttempts, domain, testType.GetTestTypeName())
 	}
 
 	// Verify that the current test type matches the one we're recording a result for

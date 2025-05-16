@@ -94,9 +94,10 @@ func NewServer(httpAddr, httpsAddr string, certManager *certificates.Manager, lo
 
 	// Create tester with default test type (will be updated later)
 	// If retryPeriod is provided, use it, otherwise use default (1 hour)
+	// Default maxAttempts is 1
 	var tester *Tester
 	if len(retryPeriod) > 0 {
-		tester = NewTesterWithRetryPeriod(logger, certificates.SelfSigned, retryPeriod[0])
+		tester = NewTesterWithRetryPeriod(logger, certificates.SelfSigned, retryPeriod[0], 1)
 	} else {
 		tester = NewTester(logger, certificates.SelfSigned)
 	}
@@ -400,6 +401,12 @@ func (s *Server) SetAutoTest(enabled bool) {
 	} else {
 		s.logger.Infof("Automatic testing disabled - using fixed test type: %s", s.testType.GetTestTypeName())
 	}
+}
+
+// SetMaxAttempts sets the maximum number of attempts for each test type
+func (s *Server) SetMaxAttempts(maxAttempts int) {
+	s.tester.maxAttempts = maxAttempts
+	s.logger.Infof("Maximum attempts per test type set to: %d", maxAttempts)
 }
 
 // RecordFailedHandshake records a failed handshake for a domain and test type

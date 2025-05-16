@@ -26,6 +26,7 @@ var (
 	testType     = flag.String("testtype", "self-signed", "Test type: self-signed, replaced-key, real-cert, real-ca")
 	autoTest     = flag.Bool("autotest", true, "Automatically test all methods for each domain")
 	retrySeconds = flag.Int("retryseconds", 86400, "Time in seconds to wait before retesting a domain (default: 24 hours)")
+	maxAttempts  = flag.Int("maxattempts", 1, "Maximum number of attempts for each test type before moving to the next test")
 )
 
 func main() {
@@ -52,6 +53,9 @@ func main() {
 	if err != nil {
 		logger.Fatalf("Failed to initialize proxy server: %v", err)
 	}
+
+	// Set the max attempts for each test type
+	proxyServer.SetMaxAttempts(*maxAttempts)
 
 	// Configure payload logging
 	if err := proxyServer.SetPayloadDir(*payloadDir); err != nil {

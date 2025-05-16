@@ -91,6 +91,10 @@ You can also run GoCertMITM using Docker:
   - If all tests fail, the tool will provide a direct tunnel to the target server
   - Results are cached per domain, so successful tests are remembered
   - The test order is determined by the `-testtype` flag, with the specified type tried first
+- `-maxattempts`: Maximum number of attempts for each test type before moving to the next test (default: 1)
+  - Increase this value if you want to retry a test type multiple times before moving on
+  - Higher values can be useful for unstable connections or intermittent failures
+  - Setting to 1 ensures the tool moves quickly through test types
 
 ### Network Setup
 
