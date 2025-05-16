@@ -104,7 +104,7 @@ To use GoCertMITM as a man-in-the-middle proxy, you need to:
 For the Direct Tunnel mechanism to work correctly, the traffic redirection must be done on the same host where the proxy is running. We provide scripts to set up and tear down the necessary firewall rules:
 
 ```bash
-# Set up firewall rules (redirects port 443 to localhost:9900)
+# Set up firewall rules (transparently redirects port 443 to localhost:9900)
 sudo ./scripts/setup_firewall.sh
 
 # Start the proxy on port 9900
@@ -117,13 +117,17 @@ sudo ./scripts/teardown_firewall.sh
 The setup script:
 - Enables IP forwarding
 - Saves the original iptables rules for restoration
-- Adds rules to redirect all port 443 traffic to localhost:9900
+- Sets up DNAT (Destination NAT) to redirect port 443 traffic to localhost:9900
+- Configures IP masquerading for proper transparent proxying
+- Ensures all traffic flows normally except for port 443 traffic
+- Adds connection marking for proper routing
 
 The teardown script:
 - Restores the original iptables rules
 - Restores the original IP forwarding setting
+- Cleans up any temporary files created during setup
 
-**Note**: These scripts require root privileges to modify system settings.
+**Note**: These scripts require root privileges to modify system settings. The setup script automatically detects your primary network interface for proper configuration.
 
 ### Installing the CA Certificate
 

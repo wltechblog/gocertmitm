@@ -1,6 +1,7 @@
 #!/bin/bash
 # Script to set up firewall rules for GoCertMITM
-# This script redirects HTTPS traffic (port 443) to localhost:9900
+# This script transparently redirects HTTPS traffic (port 443) to localhost:9900
+# using DNAT and IP masquerading for proper transparent proxying
 
 # Check if running as root
 if [ "$EUID" -ne 0 ]; then
@@ -10,8 +11,17 @@ fi
 
 # Define variables
 PROXY_PORT=9900
+PROXY_IP="127.0.0.1"
 ORIGINAL_RULES_FILE="/tmp/iptables_rules_backup.txt"
 ORIGINAL_IPV4_FORWARD_FILE="/tmp/ipv4_forward_backup.txt"
+
+# Get the primary network interface
+PRIMARY_INTERFACE=$(ip route | grep default | awk '{print $5}' | head -n 1)
+if [ -z "$PRIMARY_INTERFACE" ]; then
+  echo "Error: Could not determine primary network interface"
+  exit 1
+fi
+echo "Detected primary network interface: $PRIMARY_INTERFACE"
 
 # Save current iptables rules
 echo "Saving current iptables rules..."
@@ -28,14 +38,25 @@ echo "Enabling IPv4 forwarding..."
 echo 1 > /proc/sys/net/ipv4/ip_forward
 sysctl -w net.ipv4.ip_forward=1
 
-# Add iptables rules to redirect HTTPS traffic
-echo "Setting up iptables rules to redirect port 443 to localhost:$PROXY_PORT..."
+# Add iptables rules for transparent proxying
+echo "Setting up iptables rules for transparent proxying of port 443 to $PROXY_IP:$PROXY_PORT..."
 
-# Redirect incoming HTTPS traffic to the proxy
-iptables -t nat -A PREROUTING -p tcp --dport 443 -j REDIRECT --to-port $PROXY_PORT
+# Set up IP masquerading for outgoing traffic
+echo "Setting up IP masquerading for outgoing traffic..."
+iptables -t nat -A POSTROUTING -o $PRIMARY_INTERFACE -j MASQUERADE
+
+# Use DNAT to redirect incoming HTTPS traffic to the proxy
+echo "Setting up DNAT for incoming HTTPS traffic..."
+iptables -t nat -A PREROUTING -p tcp --dport 443 -j DNAT --to-destination $PROXY_IP:$PROXY_PORT
 
 # Redirect locally-generated HTTPS traffic to the proxy
-iptables -t nat -A OUTPUT -p tcp --dport 443 -j REDIRECT --to-port $PROXY_PORT
+echo "Setting up redirection for locally-generated HTTPS traffic..."
+iptables -t nat -A OUTPUT -p tcp --dport 443 -j DNAT --to-destination $PROXY_IP:$PROXY_PORT
+iptables -t nat -A OUTPUT -p tcp --dport 443 -j MASQUERADE
 
-echo "Firewall setup complete. All traffic to port 443 is now redirected to localhost:$PROXY_PORT"
+# Add a rule to mark connections for routing
+echo "Setting up connection marking for proper routing..."
+iptables -t mangle -A PREROUTING -p tcp --dport $PROXY_PORT -j MARK --set-mark 1
+
+echo "Firewall setup complete. All traffic to port 443 is now transparently redirected to $PROXY_IP:$PROXY_PORT"
 echo "To restore original settings, run the teardown_firewall.sh script"
