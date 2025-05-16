@@ -84,6 +84,8 @@ func (t *ReplacedKeyTester) Test(clientIP, host string) (bool, error) {
 		// Handshake failed, client rejected certificate
 		t.logger.LogCertificateTest(clientIP, host, "Replaced key", false)
 		t.reporter.AddResult(clientIP, host, "Replaced key", false, fmt.Sprintf("Handshake failed: %v", err))
+		// Log connection summary
+		t.logger.LogConnectionSummary(clientIP, host, "Replaced key", false, false)
 		return false, nil
 	}
 
@@ -94,16 +96,22 @@ func (t *ReplacedKeyTester) Test(clientIP, host string) (bool, error) {
 			// Connection accepted, client accepted certificate
 			t.logger.LogCertificateTest(clientIP, host, "Replaced key", true)
 			t.reporter.AddResult(clientIP, host, "Replaced key", true, "Client accepted certificate with replaced key")
+			// Log connection summary
+			t.logger.LogConnectionSummary(clientIP, host, "Replaced key", true, false)
 			return true, nil
 		}
 		// Connection not accepted
 		t.logger.LogCertificateTest(clientIP, host, "Replaced key", false)
 		t.reporter.AddResult(clientIP, host, "Replaced key", false, "Server did not accept connection")
+		// Log connection summary
+		t.logger.LogConnectionSummary(clientIP, host, "Replaced key", false, false)
 		return false, nil
 	case <-time.After(5 * time.Second):
 		// Timeout
 		t.logger.LogCertificateTest(clientIP, host, "Replaced key", false)
 		t.reporter.AddResult(clientIP, host, "Replaced key", false, "Timeout waiting for server to accept connection")
+		// Log connection summary
+		t.logger.LogConnectionSummary(clientIP, host, "Replaced key", false, false)
 		return false, nil
 	}
 }

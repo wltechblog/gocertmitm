@@ -157,7 +157,27 @@ func (l *Logger) LogCertificateTest(clientIP, host string, testType string, acce
 		result = "ACCEPTED"
 	}
 	reqID := l.GetRequestID(clientIP, host)
-	l.Infof("[%s][CERT] %s test for %s from %s: %s", reqID, testType, host, clientIP, result)
+	// Log at debug level instead of info level to reduce verbosity
+	l.Debugf("[%s][CERT] %s test for %s from %s: %s", reqID, testType, host, clientIP, result)
+}
+
+// LogConnectionSummary logs a summary of a connection at the end
+func (l *Logger) LogConnectionSummary(clientIP, host string, testType string, accepted bool, directTunnel bool) {
+	reqID := l.GetRequestID(clientIP, host)
+
+	if directTunnel {
+		l.Infof("[%s][SUMMARY] Connection from %s to %s: Direct tunnel mode (all tests failed)",
+			reqID, clientIP, host)
+		return
+	}
+
+	result := "REJECTED"
+	if accepted {
+		result = "ACCEPTED"
+	}
+
+	l.Infof("[%s][SUMMARY] Connection from %s to %s: %s test %s",
+		reqID, clientIP, host, testType, result)
 }
 
 // GetRequestID returns a request ID for a client IP and host

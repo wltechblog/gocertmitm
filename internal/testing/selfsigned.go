@@ -84,6 +84,8 @@ func (t *SelfSignedTester) Test(clientIP, host string) (bool, error) {
 		// Handshake failed, client rejected certificate
 		t.logger.LogCertificateTest(clientIP, host, "Self-signed", false)
 		t.reporter.AddResult(clientIP, host, "Self-signed", false, fmt.Sprintf("Handshake failed: %v", err))
+		// Log connection summary
+		t.logger.LogConnectionSummary(clientIP, host, "Self-signed", false, false)
 		return false, nil
 	}
 
@@ -94,16 +96,22 @@ func (t *SelfSignedTester) Test(clientIP, host string) (bool, error) {
 			// Connection accepted, client accepted certificate
 			t.logger.LogCertificateTest(clientIP, host, "Self-signed", true)
 			t.reporter.AddResult(clientIP, host, "Self-signed", true, "Client accepted self-signed certificate")
+			// Log connection summary
+			t.logger.LogConnectionSummary(clientIP, host, "Self-signed", true, false)
 			return true, nil
 		}
 		// Connection not accepted
 		t.logger.LogCertificateTest(clientIP, host, "Self-signed", false)
 		t.reporter.AddResult(clientIP, host, "Self-signed", false, "Server did not accept connection")
+		// Log connection summary
+		t.logger.LogConnectionSummary(clientIP, host, "Self-signed", false, false)
 		return false, nil
 	case <-time.After(5 * time.Second):
 		// Timeout
 		t.logger.LogCertificateTest(clientIP, host, "Self-signed", false)
 		t.reporter.AddResult(clientIP, host, "Self-signed", false, "Timeout waiting for server to accept connection")
+		// Log connection summary
+		t.logger.LogConnectionSummary(clientIP, host, "Self-signed", false, false)
 		return false, nil
 	}
 }

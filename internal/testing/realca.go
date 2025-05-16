@@ -84,6 +84,8 @@ func (t *RealCATester) Test(clientIP, host, caHost string) (bool, error) {
 		// Handshake failed, client rejected certificate
 		t.logger.LogCertificateTest(clientIP, host, "Real CA", false)
 		t.reporter.AddResult(clientIP, host, "Real CA", false, fmt.Sprintf("Handshake failed: %v", err))
+		// Log connection summary
+		t.logger.LogConnectionSummary(clientIP, host, "Real CA", false, false)
 		return false, nil
 	}
 
@@ -94,16 +96,22 @@ func (t *RealCATester) Test(clientIP, host, caHost string) (bool, error) {
 			// Connection accepted, client accepted certificate
 			t.logger.LogCertificateTest(clientIP, host, "Real CA", true)
 			t.reporter.AddResult(clientIP, host, "Real CA", true, fmt.Sprintf("Client accepted certificate signed by %s CA", caHost))
+			// Log connection summary
+			t.logger.LogConnectionSummary(clientIP, host, "Real CA", true, false)
 			return true, nil
 		}
 		// Connection not accepted
 		t.logger.LogCertificateTest(clientIP, host, "Real CA", false)
 		t.reporter.AddResult(clientIP, host, "Real CA", false, "Server did not accept connection")
+		// Log connection summary
+		t.logger.LogConnectionSummary(clientIP, host, "Real CA", false, false)
 		return false, nil
 	case <-time.After(5 * time.Second):
 		// Timeout
 		t.logger.LogCertificateTest(clientIP, host, "Real CA", false)
 		t.reporter.AddResult(clientIP, host, "Real CA", false, "Timeout waiting for server to accept connection")
+		// Log connection summary
+		t.logger.LogConnectionSummary(clientIP, host, "Real CA", false, false)
 		return false, nil
 	}
 }

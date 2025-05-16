@@ -386,6 +386,15 @@ func (t *Tester) RecordTestResult(domain string, testType certificates.TestType,
 		t.logger.Infof("[DOMAIN-FINAL] Domain %s final status: TestsCompleted=%v, SuccessfulTestSet=%v",
 			domain, status.TestsCompleted, status.SuccessfulTestSet)
 
+		// Extract client IP from domain if possible (for connection summary)
+		clientIP := "unknown"
+		if parts := strings.Split(domain, ":"); len(parts) > 1 {
+			clientIP = parts[0]
+		}
+
+		// Log connection summary for direct tunnel mode
+		t.logger.LogConnectionSummary(clientIP, domain, "", false, true)
+
 		return certificates.DirectTunnel // Special value indicating direct tunnel
 	}
 
@@ -430,6 +439,15 @@ func (t *Tester) ShouldUseTunnel(domain string) bool {
 		// Make sure this domain is in the direct tunnel map
 		// This is a safety check to ensure we always use direct tunnel when all tests have failed
 		t.logger.Infof("[TUNNEL] Adding %s to direct tunnel domains map", domain)
+
+		// Extract client IP from domain if possible (for connection summary)
+		clientIP := "unknown"
+		if parts := strings.Split(domain, ":"); len(parts) > 1 {
+			clientIP = parts[0]
+		}
+
+		// Log connection summary for direct tunnel mode
+		t.logger.LogConnectionSummary(clientIP, domain, "", false, true)
 	} else if status.TestsCompleted {
 		t.logger.Debugf("[TUNNEL] Not using tunnel for %s - tests completed with success", domain)
 	} else {
