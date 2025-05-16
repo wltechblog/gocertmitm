@@ -23,6 +23,14 @@ if [ -z "$PRIMARY_INTERFACE" ]; then
 fi
 echo "Detected primary network interface: $PRIMARY_INTERFACE"
 
+# Get the local IP address of the primary interface
+LOCAL_IP=$(ip -4 addr show $PRIMARY_INTERFACE | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n 1)
+if [ -z "$LOCAL_IP" ]; then
+  echo "Warning: Could not determine local IP address, using 127.0.0.1"
+  LOCAL_IP="127.0.0.1"
+fi
+echo "Detected local IP address: $LOCAL_IP"
+
 # Save current iptables rules
 echo "Saving current iptables rules..."
 iptables-save > "$ORIGINAL_RULES_FILE"
@@ -45,14 +53,12 @@ echo "Setting up iptables rules for transparent proxying of port 443 to $PROXY_I
 echo "Setting up IP masquerading for outgoing traffic..."
 iptables -t nat -A POSTROUTING -o $PRIMARY_INTERFACE -j MASQUERADE
 
-# Use DNAT to redirect incoming HTTPS traffic to the proxy
-echo "Setting up DNAT for incoming HTTPS traffic..."
-iptables -t nat -A PREROUTING -p tcp --dport 443 -j DNAT --to-destination $PROXY_IP:$PROXY_PORT
+# Use DNAT to redirect only routed HTTPS traffic to the proxy (not local traffic)
+echo "Setting up DNAT for routed HTTPS traffic only..."
+# Exclude both loopback and the local IP address from being redirected
+iptables -t nat -A PREROUTING -p tcp --dport 443 ! -s 127.0.0.1 ! -s $LOCAL_IP -j DNAT --to-destination $PROXY_IP:$PROXY_PORT
 
-# Redirect locally-generated HTTPS traffic to the proxy
-echo "Setting up redirection for locally-generated HTTPS traffic..."
-iptables -t nat -A OUTPUT -p tcp --dport 443 -j DNAT --to-destination $PROXY_IP:$PROXY_PORT
-iptables -t nat -A OUTPUT -p tcp --dport 443 -j MASQUERADE
+# Note: We're not redirecting locally-generated HTTPS traffic as per requirements
 
 # Add a rule to mark connections for routing
 echo "Setting up connection marking for proper routing..."

@@ -117,9 +117,10 @@ sudo ./scripts/teardown_firewall.sh
 The setup script:
 - Enables IP forwarding
 - Saves the original iptables rules for restoration
-- Sets up DNAT (Destination NAT) to redirect port 443 traffic to localhost:9900
+- Sets up DNAT (Destination NAT) to redirect only routed port 443 traffic to localhost:9900
+- Excludes locally-generated traffic from being proxied
 - Configures IP masquerading for proper transparent proxying
-- Ensures all traffic flows normally except for port 443 traffic
+- Ensures all traffic flows normally except for routed port 443 traffic
 - Adds connection marking for proper routing
 
 The teardown script:

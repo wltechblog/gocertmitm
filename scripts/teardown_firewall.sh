@@ -20,6 +20,13 @@ if [ -z "$PRIMARY_INTERFACE" ]; then
   echo "Warning: Could not determine primary network interface"
 fi
 
+# Get the local IP address of the primary interface
+LOCAL_IP=$(ip -4 addr show $PRIMARY_INTERFACE 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n 1)
+if [ -z "$LOCAL_IP" ]; then
+  echo "Warning: Could not determine local IP address, using 127.0.0.1"
+  LOCAL_IP="127.0.0.1"
+fi
+
 # Check if backup files exist
 if [ ! -f "$ORIGINAL_RULES_FILE" ]; then
   echo "Error: Original iptables rules file not found at $ORIGINAL_RULES_FILE"
@@ -27,14 +34,12 @@ if [ ! -f "$ORIGINAL_RULES_FILE" ]; then
 
   # Remove the specific rules we added
   echo "Removing DNAT rules..."
-  iptables -t nat -D PREROUTING -p tcp --dport 443 -j DNAT --to-destination $PROXY_IP:$PROXY_PORT 2>/dev/null
-  iptables -t nat -D OUTPUT -p tcp --dport 443 -j DNAT --to-destination $PROXY_IP:$PROXY_PORT 2>/dev/null
+  iptables -t nat -D PREROUTING -p tcp --dport 443 ! -s 127.0.0.1 ! -s $LOCAL_IP -j DNAT --to-destination $PROXY_IP:$PROXY_PORT 2>/dev/null
 
   echo "Removing MASQUERADE rules..."
   if [ ! -z "$PRIMARY_INTERFACE" ]; then
     iptables -t nat -D POSTROUTING -o $PRIMARY_INTERFACE -j MASQUERADE 2>/dev/null
   fi
-  iptables -t nat -D OUTPUT -p tcp --dport 443 -j MASQUERADE 2>/dev/null
 
   echo "Removing connection marking rules..."
   iptables -t mangle -D PREROUTING -p tcp --dport $PROXY_PORT -j MARK --set-mark 1 2>/dev/null
