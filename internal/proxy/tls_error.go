@@ -20,8 +20,9 @@ func (l *tlsErrorLogger) Write(p []byte) (n int, err error) {
 	msg := string(p)
 
 	// Check if this is a direct tunnel error
-	if strings.Contains(msg, "direct tunnel requested for") {
+	if strings.Contains(msg, "direct tunnel requested for") || strings.Contains(msg, "direct tunnel established for") {
 		// This is expected when we're using a direct tunnel, so we don't need to log it as an error
+		l.server.logger.Debugf("[TUNNEL-TLS-ERROR] Detected direct tunnel error: %s", msg)
 		return len(p), nil
 	}
 
