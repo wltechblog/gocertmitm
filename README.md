@@ -73,7 +73,8 @@ You can also run GoCertMITM using Docker:
 
 - `-listen`: Address to listen on for HTTP proxy (default: ":8080")
 - `-listens`: Address to listen on for HTTPS proxy (default: ":8443")
-- `-verbose`: Enable verbose logging
+- `-verbose`: Enable verbose logging (operational details)
+- `-debug`: Enable debug logging (developer information)
 - `-certdir`: Directory to store generated certificates (default: "./certs")
 - `-logdir`: Directory to store logs (default: "./logs")
 - `-payloaddir`: Directory to store request/response payloads (default: "./payloads")
@@ -437,6 +438,31 @@ The logging system provides:
 - Real-time console output for immediate feedback
 - Detailed logs of intercepted data for analysis
 - Structured storage of test results for reporting
+
+#### Log Levels
+
+GoCertMITM uses four distinct log levels to provide appropriate information for different use cases:
+
+- **ERROR**: Critical issues that affect functionality (always displayed)
+- **INFO**: Important operational information (always displayed)
+- **VERBOSE**: Detailed operational information (enabled with `-verbose`)
+- **DEBUG**: Developer debugging information (enabled with `-debug`)
+
+You can control the verbosity of logging with command-line flags:
+
+```bash
+# Default logging (ERROR and INFO only)
+./certmitm
+
+# Enable verbose logging for operational details
+./certmitm -verbose
+
+# Enable debug logging for developer information
+./certmitm -debug
+
+# Enable both verbose and debug logging
+./certmitm -verbose -debug
+```
 
 ### Payload Logging
 

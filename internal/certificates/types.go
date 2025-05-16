@@ -83,6 +83,7 @@ type Manager struct {
 // Logger interface for logging
 type Logger interface {
 	Debugf(format string, v ...interface{})
+	Verbosef(format string, v ...interface{})
 	Infof(format string, v ...interface{})
 	Errorf(format string, v ...interface{})
 }

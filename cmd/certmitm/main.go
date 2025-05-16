@@ -17,7 +17,8 @@ import (
 var (
 	listenAddr   = flag.String("listen", ":8080", "Address to listen on for HTTP proxy")
 	listenAddrs  = flag.String("listens", ":8443", "Address to listen on for HTTPS proxy")
-	verbose      = flag.Bool("verbose", false, "Enable verbose logging")
+	verbose      = flag.Bool("verbose", false, "Enable verbose logging (operational details)")
+	debug        = flag.Bool("debug", false, "Enable debug logging (developer information)")
 	certDir      = flag.String("certdir", "./certs", "Directory to store generated certificates")
 	logDir       = flag.String("logdir", "./logs", "Directory to store logs")
 	payloadDir   = flag.String("payloaddir", "./payloads", "Directory to store request/response payloads")
@@ -31,11 +32,14 @@ func main() {
 	flag.Parse()
 
 	// Initialize logger
-	logger, err := logging.NewLogger(*logDir, *verbose)
+	logger, err := logging.NewLogger(*logDir, *verbose, *debug)
 	if err != nil {
 		log.Fatalf("Failed to initialize logger: %v", err)
 	}
 	defer logger.Close()
+
+	// Log startup information
+	logger.Infof("Starting GoCertMITM with verbose=%v, debug=%v", *verbose, *debug)
 
 	// Initialize certificate manager
 	certManager, err := certificates.NewManager(*certDir, logger)

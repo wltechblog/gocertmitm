@@ -220,22 +220,22 @@ func (s *Server) handleDirectTunnelTCP(clientConn net.Conn, destIP string, destP
 
 	// Log that we're starting a direct TCP tunnel
 	s.logger.InfoWithRequestIDf(reqID, "[TUNNEL-TCP] Starting direct TCP tunnel from %s to %s", clientIP, destAddr)
-	fmt.Printf("[DEBUG-DIRECT-TUNNEL-TCP] Starting direct TCP tunnel from %s to %s\n", clientIP, destAddr)
+	s.logger.DebugWithRequestIDf(reqID, "[DIRECT-TUNNEL-TCP] Starting direct TCP tunnel from %s to %s", clientIP, destAddr)
 
 	// IMPORTANT: We need to establish the outbound connection BEFORE reading any data from the client
 	// This ensures that we can immediately forward any data we read from the client to the target
 
 	// Connect directly to the target server
-	fmt.Printf("[DEBUG-DIRECT-TUNNEL-TCP] Connecting to %s\n", destAddr)
+	s.logger.DebugWithRequestIDf(reqID, "[DIRECT-TUNNEL-TCP] Connecting to %s", destAddr)
 	targetConn, err := net.DialTimeout("tcp", destAddr, 30*time.Second)
 	if err != nil {
 		s.logger.ErrorWithRequestIDf(reqID, "[ERROR] Failed to connect to target %s: %v", destAddr, err)
-		fmt.Printf("[DEBUG-DIRECT-TUNNEL-TCP] Connection failed to %s: %v\n", destAddr, err)
+		s.logger.DebugWithRequestIDf(reqID, "[DIRECT-TUNNEL-TCP] Connection failed to %s: %v", destAddr, err)
 		clientConn.Close()
 		return
 	}
 
-	fmt.Printf("[DEBUG-DIRECT-TUNNEL-TCP] Successfully connected to %s (local: %s, remote: %s)\n",
+	s.logger.DebugWithRequestIDf(reqID, "[DIRECT-TUNNEL-TCP] Successfully connected to %s (local: %s, remote: %s)",
 		destAddr, targetConn.LocalAddr(), targetConn.RemoteAddr())
 
 	// Log that we're starting a pure TCP passthrough tunnel
@@ -254,32 +254,32 @@ func (s *Server) handleDirectTunnelTCP(clientConn net.Conn, destIP string, destP
 	done := make(chan struct{}, 2)
 
 	// Copy from client to target
-	go func() {
+	go func(connReqID string) {
 		// Use io.Copy for efficient copying
 		n, err := io.Copy(targetConn, clientConn)
 		if err != nil && err != io.EOF {
-			s.logger.DebugWithRequestIDf(reqID, "[TUNNEL-TCP] Error copying from client to target: %v", err)
+			s.logger.DebugWithRequestIDf(connReqID, "[TUNNEL-TCP] Error copying from client to target: %v", err)
 		} else {
-			s.logger.DebugWithRequestIDf(reqID, "[TUNNEL-TCP] Copied %d bytes from client to target", n)
+			s.logger.DebugWithRequestIDf(connReqID, "[TUNNEL-TCP] Copied %d bytes from client to target", n)
 		}
 
 		// Signal that we're done
 		done <- struct{}{}
-	}()
+	}(reqID)
 
 	// Copy from target to client
-	go func() {
+	go func(connReqID string) {
 		// Use io.Copy for efficient copying
 		n, err := io.Copy(clientConn, targetConn)
 		if err != nil && err != io.EOF {
-			s.logger.DebugWithRequestIDf(reqID, "[TUNNEL-TCP] Error copying from target to client: %v", err)
+			s.logger.DebugWithRequestIDf(connReqID, "[TUNNEL-TCP] Error copying from target to client: %v", err)
 		} else {
-			s.logger.DebugWithRequestIDf(reqID, "[TUNNEL-TCP] Copied %d bytes from target to client", n)
+			s.logger.DebugWithRequestIDf(connReqID, "[TUNNEL-TCP] Copied %d bytes from target to client", n)
 		}
 
 		// Signal that we're done
 		done <- struct{}{}
-	}()
+	}(reqID)
 
 	// Wait for either goroutine to finish
 	<-done
@@ -292,7 +292,7 @@ func (s *Server) handleDirectTunnelTCP(clientConn net.Conn, destIP string, destP
 	<-done
 
 	s.logger.InfoWithRequestIDf(reqID, "[TUNNEL-TCP] Direct TCP tunnel closed between %s and %s", clientIP, destAddr)
-	fmt.Printf("[DEBUG-DIRECT-TUNNEL-TCP] Direct TCP tunnel closed between %s and %s\n", clientIP, destAddr)
+	s.logger.DebugWithRequestIDf(reqID, "[DIRECT-TUNNEL-TCP] Direct TCP tunnel closed between %s and %s", clientIP, destAddr)
 }
 
 // handleDirectTunnel creates a direct tunnel between the client and the target server
@@ -304,15 +304,18 @@ func (s *Server) handleDirectTunnel(w http.ResponseWriter, r *http.Request) {
 	// Get client IP
 	clientIP := getClientIP(r)
 
+	// Get a request ID for this connection
+	reqID := s.logger.GetRequestID(clientIP, r.Host)
+
 	// Print immediate debug information about the direct tunnel request
-	fmt.Printf("[DEBUG-DIRECT-TUNNEL] New direct tunnel request from %s to %s\n",
+	s.logger.DebugWithRequestIDf(reqID, "[DIRECT-TUNNEL] New direct tunnel request from %s to %s",
 		clientIP, r.Host)
 
 	// Log all request headers for debugging
-	fmt.Printf("[DEBUG-DIRECT-TUNNEL-HEADERS] Request headers from %s:\n", clientIP)
+	s.logger.DebugWithRequestIDf(reqID, "[DIRECT-TUNNEL-HEADERS] Request headers from %s:", clientIP)
 	for name, values := range r.Header {
 		for _, value := range values {
-			fmt.Printf("[DEBUG-DIRECT-TUNNEL-HEADERS]   %s: %s\n", name, value)
+			s.logger.DebugWithRequestIDf(reqID, "[DIRECT-TUNNEL-HEADERS]   %s: %s", name, value)
 		}
 	}
 
@@ -347,8 +350,8 @@ func (s *Server) handleDirectTunnel(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Get a request ID for this connection
-	reqID := s.logger.GetRequestID(clientIP, hostWithoutPort)
+	// Update the request ID with the hostname
+	reqID = s.logger.GetRequestID(clientIP, hostWithoutPort)
 
 	// Log the destination IP if available
 	if destIP != "" {
@@ -376,7 +379,7 @@ func (s *Server) handleDirectTunnel(w http.ResponseWriter, r *http.Request) {
 		debugConn.SetClientIP(clientIP)
 		debugConn.SetRequestID(reqID)
 
-		fmt.Printf("[DEBUG-DIRECT-TUNNEL] Set domain %s and client IP %s on connection %s\n",
+		s.logger.DebugWithRequestIDf(reqID, "[DIRECT-TUNNEL] Set domain %s and client IP %s on connection %s",
 			hostWithoutPort, clientIP, clientConn.RemoteAddr())
 	}
 
@@ -384,7 +387,7 @@ func (s *Server) handleDirectTunnel(w http.ResponseWriter, r *http.Request) {
 	// This is useful for transparent proxy mode
 	var originalDest *OriginalDestination
 	if tcpConn, ok := clientConn.(*net.TCPConn); ok {
-		fmt.Printf("[DEBUG-TUNNEL] Attempting to get original destination for connection from %s (Host: %s)\n",
+		s.logger.DebugWithRequestIDf(reqID, "[TUNNEL] Attempting to get original destination for connection from %s (Host: %s)",
 			clientIP, r.Host)
 
 		var err error
@@ -394,7 +397,7 @@ func (s *Server) handleDirectTunnel(w http.ResponseWriter, r *http.Request) {
 			s.logger.InfoWithRequestIDf(reqID, "[ORIGINAL-DST] Original destination for client %s: %s (Host header: %s)",
 				clientIP, originalDest.HostPort, r.Host)
 
-			fmt.Printf("[DEBUG-TUNNEL] Successfully got original destination: %s for client %s (Host header: %s)\n",
+			s.logger.DebugWithRequestIDf(reqID, "[TUNNEL] Successfully got original destination: %s for client %s (Host header: %s)",
 				originalDest.HostPort, clientIP, r.Host)
 
 			// Always use the original destination IP:port from SO_ORIGINAL_DST
@@ -403,7 +406,7 @@ func (s *Server) handleDirectTunnel(w http.ResponseWriter, r *http.Request) {
 				s.logger.InfoWithRequestIDf(reqID, "[ORIGINAL-DST] Using original destination %s instead of Host header %s",
 					originalDest.HostPort, r.Host)
 
-				fmt.Printf("[DEBUG-TUNNEL] Original destination %s differs from Host header %s - using original destination\n",
+				s.logger.DebugWithRequestIDf(reqID, "[TUNNEL] Original destination %s differs from Host header %s - using original destination",
 					originalDest.HostPort, r.Host)
 
 				// Store the original hostname for logging purposes
@@ -420,18 +423,18 @@ func (s *Server) handleDirectTunnel(w http.ResponseWriter, r *http.Request) {
 				s.logger.InfoWithRequestIDf(reqID, "[ORIGINAL-DST] Direct tunnel for hostname %s directed to IP %s",
 					originalHostname, originalDest.IPString)
 
-				fmt.Printf("[DEBUG-TUNNEL] Updated request host to %s (original hostname: %s)\n",
+				s.logger.DebugWithRequestIDf(reqID, "[TUNNEL] Updated request host to %s (original hostname: %s)",
 					r.Host, originalHostname)
 			} else {
-				fmt.Printf("[DEBUG-TUNNEL] Original destination matches Host header: %s\n", r.Host)
+				s.logger.DebugWithRequestIDf(reqID, "[TUNNEL] Original destination matches Host header: %s", r.Host)
 			}
 		} else {
 			s.logger.DebugWithRequestIDf(reqID, "[ORIGINAL-DST] Failed to get original destination: %v", err)
-			fmt.Printf("[DEBUG-TUNNEL] Failed to get original destination for client %s: %v\n",
+			s.logger.DebugWithRequestIDf(reqID, "[TUNNEL] Failed to get original destination for client %s: %v",
 				clientIP, err)
 		}
 	} else {
-		fmt.Printf("[DEBUG-TUNNEL] Connection is not a TCP connection, cannot get original destination\n")
+		s.logger.DebugWithRequestIDf(reqID, "[TUNNEL] Connection is not a TCP connection, cannot get original destination")
 	}
 
 	// Store the destination information for this client IP
@@ -462,13 +465,13 @@ func (s *Server) handleDirectTunnel(w http.ResponseWriter, r *http.Request) {
 	s.logger.DebugWithRequestIDf(reqID, "[TUNNEL] Connecting to host %s on port %s", targetHost, targetPort)
 
 	// Attempt to connect with an increased timeout
-	fmt.Printf("[DEBUG-DIRECT-TUNNEL] Attempting to connect to %s:%s (timeout: 30s)\n",
+	s.logger.DebugWithRequestIDf(reqID, "[DIRECT-TUNNEL] Attempting to connect to %s:%s (timeout: 30s)",
 		targetHost, targetPort)
 
 	targetConn, err := net.DialTimeout("tcp", net.JoinHostPort(targetHost, targetPort), 30*time.Second)
 	if err != nil {
 		s.logger.ErrorWithRequestIDf(reqID, "[ERROR] Failed to connect to target %s: %v", r.Host, err)
-		fmt.Printf("[DEBUG-DIRECT-TUNNEL] Connection failed to %s:%s: %v\n",
+		s.logger.DebugWithRequestIDf(reqID, "[DIRECT-TUNNEL] Connection failed to %s:%s: %v",
 			targetHost, targetPort, err)
 
 		// Send an error response to the client
@@ -478,7 +481,7 @@ func (s *Server) handleDirectTunnel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fmt.Printf("[DEBUG-DIRECT-TUNNEL] Successfully connected to %s:%s (local: %s, remote: %s)\n",
+	s.logger.DebugWithRequestIDf(reqID, "[DIRECT-TUNNEL] Successfully connected to %s:%s (local: %s, remote: %s)",
 		targetHost, targetPort, targetConn.LocalAddr(), targetConn.RemoteAddr())
 
 	s.logger.InfoWithRequestIDf(reqID, "[TUNNEL] Successfully established direct TCP connection to %s", r.Host)
@@ -541,7 +544,7 @@ func (s *Server) handleDirectTunnel(w http.ResponseWriter, r *http.Request) {
 	// This is a true passthrough tunnel that just copies bytes in both directions
 
 	// Forward data from target to client
-	go func() {
+	go func(connReqID string) {
 		defer wg.Done()
 		defer clientConn.Close()
 		defer targetConn.Close()
@@ -557,27 +560,27 @@ func (s *Server) handleDirectTunnel(w http.ResponseWriter, r *http.Request) {
 				// Write to client immediately without any processing
 				_, writeErr := clientConn.Write(buf[:n])
 				if writeErr != nil {
-					s.logger.DebugWithRequestIDf(reqID, "[TUNNEL] Write error to client: %v", writeErr)
+					s.logger.DebugWithRequestIDf(connReqID, "[TUNNEL] Write error to client: %v", writeErr)
 					return
 				}
 
 				// Log data flow periodically (only for large transfers)
 				if n > 1024 {
-					s.logger.DebugWithRequestIDf(reqID, "[TUNNEL] Forwarded %d bytes from target to client", n)
+					s.logger.DebugWithRequestIDf(connReqID, "[TUNNEL] Forwarded %d bytes from target to client", n)
 				}
 			}
 
 			if err != nil {
 				if err != io.EOF {
-					s.logger.DebugWithRequestIDf(reqID, "[TUNNEL] Read error from target: %v", err)
+					s.logger.DebugWithRequestIDf(connReqID, "[TUNNEL] Read error from target: %v", err)
 				}
 				return
 			}
 		}
-	}()
+	}(reqID)
 
 	// Forward data from client to target
-	go func() {
+	go func(connReqID string) {
 		defer wg.Done()
 		defer clientConn.Close()
 		defer targetConn.Close()
@@ -593,24 +596,24 @@ func (s *Server) handleDirectTunnel(w http.ResponseWriter, r *http.Request) {
 				// Write to target immediately without any processing
 				_, writeErr := targetConn.Write(buf[:n])
 				if writeErr != nil {
-					s.logger.DebugWithRequestIDf(reqID, "[TUNNEL] Write error to target: %v", writeErr)
+					s.logger.DebugWithRequestIDf(connReqID, "[TUNNEL] Write error to target: %v", writeErr)
 					return
 				}
 
 				// Log data flow periodically (only for large transfers)
 				if n > 1024 {
-					s.logger.DebugWithRequestIDf(reqID, "[TUNNEL] Forwarded %d bytes from client to target", n)
+					s.logger.DebugWithRequestIDf(connReqID, "[TUNNEL] Forwarded %d bytes from client to target", n)
 				}
 			}
 
 			if err != nil {
 				if err != io.EOF {
-					s.logger.DebugWithRequestIDf(reqID, "[TUNNEL] Read error from client: %v", err)
+					s.logger.DebugWithRequestIDf(connReqID, "[TUNNEL] Read error from client: %v", err)
 				}
 				return
 			}
 		}
-	}()
+	}(reqID)
 
 	// Log that we've established the tunnel
 	s.logger.InfoWithRequestIDf(reqID, "[TUNNEL] Established direct tunnel from %s to %s (IP: %s)",

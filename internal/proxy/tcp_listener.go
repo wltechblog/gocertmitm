@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"fmt"
 	"io"
 	"net"
 	"strconv"
@@ -47,12 +46,12 @@ func (l *DebugListener) Accept() (net.Conn, error) {
 	// Accept the connection
 	conn, err := l.Listener.Accept()
 	if err != nil {
-		fmt.Printf("[DEBUG-TCP-ACCEPT] Error accepting connection: %v\n", err)
+		l.server.logger.Debugf("[TCP-ACCEPT] Error accepting connection: %v", err)
 		return nil, err
 	}
 
 	// Log the connection immediately
-	fmt.Printf("[DEBUG-TCP-ACCEPT] New TCP connection accepted from %s to %s\n",
+	l.server.logger.Debugf("[TCP-ACCEPT] New TCP connection accepted from %s to %s",
 		conn.RemoteAddr(), conn.LocalAddr())
 
 	// Extract client IP for logging
@@ -63,18 +62,18 @@ func (l *DebugListener) Accept() (net.Conn, error) {
 	var origDestPort int
 
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		fmt.Printf("[DEBUG-TCP-ACCEPT] Attempting to get original destination for connection from %s\n",
+		l.server.logger.Debugf("[TCP-ACCEPT] Attempting to get original destination for connection from %s",
 			conn.RemoteAddr())
 
 		// Get the file descriptor
 		file, err := tcpConn.File()
 		if err != nil {
-			fmt.Printf("[DEBUG-TCP-ACCEPT] Failed to get file descriptor: %v\n", err)
+			l.server.logger.Debugf("[TCP-ACCEPT] Failed to get file descriptor: %v", err)
 		} else {
 			defer file.Close()
 
 			fd := int(file.Fd())
-			fmt.Printf("[DEBUG-TCP-ACCEPT] Got file descriptor %d for connection from %s\n",
+			l.server.logger.Debugf("[TCP-ACCEPT] Got file descriptor %d for connection from %s",
 				fd, conn.RemoteAddr())
 
 			// Get original destination using SO_ORIGINAL_DST socket option
@@ -82,7 +81,7 @@ func (l *DebugListener) Accept() (net.Conn, error) {
 			const SO_ORIGINAL_DST = 80
 			addr, err := syscall.GetsockoptIPv6Mreq(fd, syscall.IPPROTO_IP, SO_ORIGINAL_DST)
 			if err != nil {
-				fmt.Printf("[DEBUG-TCP-ACCEPT] Failed to get original destination: %v\n", err)
+				l.server.logger.Debugf("[TCP-ACCEPT] Failed to get original destination: %v", err)
 			} else {
 				// Extract IP and port from the sockaddr structure
 				ip := net.IPv4(
@@ -98,38 +97,38 @@ func (l *DebugListener) Accept() (net.Conn, error) {
 				origDestIP = ip.String()
 				origDestPort = port
 
-				fmt.Printf("[DEBUG-TCP-ACCEPT] Original destination: %s:%d for connection from %s\n",
+				l.server.logger.Debugf("[TCP-ACCEPT] Original destination: %s:%d for connection from %s",
 					origDestIP, origDestPort, conn.RemoteAddr())
 
 				// Check if this IP is already marked for direct tunnel mode
 				if l.server != nil {
 					l.server.directTunnelMu.Lock()
 					directTunnel := l.server.directTunnelDomains[origDestIP]
-					fmt.Printf("[DEBUG-TCP-ACCEPT-DIRECT] Checking if IP %s is marked for direct tunnel: %v\n",
+					l.server.logger.Debugf("[TCP-ACCEPT-DIRECT] Checking if IP %s is marked for direct tunnel: %v",
 						origDestIP, directTunnel)
 
 					// Also check if we have any domains in the directTunnelDomains map
-					fmt.Printf("[DEBUG-TCP-ACCEPT-DIRECT] Current directTunnelDomains map contents:\n")
+					l.server.logger.Debugf("[TCP-ACCEPT-DIRECT] Current directTunnelDomains map contents:")
 					for domain := range l.server.directTunnelDomains {
-						fmt.Printf("[DEBUG-TCP-ACCEPT-DIRECT]   %s\n", domain)
+						l.server.logger.Debugf("[TCP-ACCEPT-DIRECT]   %s", domain)
 					}
 
 					// Check if we have a domain for this IP in the ipToDomain map
 					if l.server.tester != nil {
 						domain := l.server.tester.GetDomainByIP(origDestIP)
 						if domain != "" {
-							fmt.Printf("[DEBUG-TCP-ACCEPT-DIRECT] Found domain %s for IP %s\n", domain, origDestIP)
+							l.server.logger.Debugf("[TCP-ACCEPT-DIRECT] Found domain %s for IP %s", domain, origDestIP)
 
 							// Check if this domain is marked for direct tunnel
 							if !directTunnel {
 								directTunnel = l.server.directTunnelDomains[domain]
-								fmt.Printf("[DEBUG-TCP-ACCEPT-DIRECT] Checking if domain %s is marked for direct tunnel: %v\n",
+								l.server.logger.Debugf("[TCP-ACCEPT-DIRECT] Checking if domain %s is marked for direct tunnel: %v",
 									domain, directTunnel)
 
 								// If the domain is marked for direct tunnel, also mark the IP
 								if directTunnel {
 									l.server.directTunnelDomains[origDestIP] = true
-									fmt.Printf("[DEBUG-TCP-ACCEPT-DIRECT] Marking IP %s for direct tunnel based on domain %s\n",
+									l.server.logger.Debugf("[TCP-ACCEPT-DIRECT] Marking IP %s for direct tunnel based on domain %s",
 										origDestIP, domain)
 								}
 							}
@@ -138,8 +137,8 @@ func (l *DebugListener) Accept() (net.Conn, error) {
 					l.server.directTunnelMu.Unlock()
 
 					if directTunnel {
-						fmt.Printf("[DEBUG-TCP-ACCEPT] Original destination IP %s is marked for direct tunnel mode\n", origDestIP)
-						fmt.Printf("[DEBUG-TCP-ACCEPT] Using direct TCP tunnel for connection from %s to %s:%d\n",
+						l.server.logger.Debugf("[TCP-ACCEPT] Original destination IP %s is marked for direct tunnel mode", origDestIP)
+						l.server.logger.Debugf("[TCP-ACCEPT] Using direct TCP tunnel for connection from %s to %s:%d",
 							clientIP, origDestIP, origDestPort)
 
 						// IMPORTANT: For direct tunnel mode, we handle the connection directly here
@@ -153,14 +152,14 @@ func (l *DebugListener) Accept() (net.Conn, error) {
 
 						// Log that we're starting a direct TCP tunnel
 						l.server.logger.InfoWithRequestIDf(reqID, "[TUNNEL-TCP-DIRECT] Starting direct TCP tunnel from %s to %s", clientIP, destAddr)
-						fmt.Printf("[DEBUG-DIRECT-TUNNEL-TCP-DIRECT] Starting direct TCP tunnel from %s to %s\n", clientIP, destAddr)
+						l.server.logger.DebugWithRequestIDf(reqID, "[DIRECT-TUNNEL-TCP-DIRECT] Starting direct TCP tunnel from %s to %s", clientIP, destAddr)
 
 						// Connect directly to the target server
-						fmt.Printf("[DEBUG-DIRECT-TUNNEL-TCP-DIRECT] Connecting to %s\n", destAddr)
+						l.server.logger.DebugWithRequestIDf(reqID, "[DIRECT-TUNNEL-TCP-DIRECT] Connecting to %s", destAddr)
 						targetConn, err := net.DialTimeout("tcp", destAddr, 30*time.Second)
 						if err != nil {
 							l.server.logger.ErrorWithRequestIDf(reqID, "[ERROR] Failed to connect to target %s: %v", destAddr, err)
-							fmt.Printf("[DEBUG-DIRECT-TUNNEL-TCP-DIRECT] Connection failed to %s: %v\n", destAddr, err)
+							l.server.logger.DebugWithRequestIDf(reqID, "[DIRECT-TUNNEL-TCP-DIRECT] Connection failed to %s: %v", destAddr, err)
 							conn.Close()
 
 							// Instead of returning an error, return a dummy connection that will be ignored by the HTTP server
@@ -172,7 +171,7 @@ func (l *DebugListener) Accept() (net.Conn, error) {
 							return dummyConn, nil
 						}
 
-						fmt.Printf("[DEBUG-DIRECT-TUNNEL-TCP-DIRECT] Successfully connected to %s (local: %s, remote: %s)\n",
+						l.server.logger.DebugWithRequestIDf(reqID, "[DIRECT-TUNNEL-TCP-DIRECT] Successfully connected to %s (local: %s, remote: %s)",
 							destAddr, targetConn.LocalAddr(), targetConn.RemoteAddr())
 
 						// Log that we're starting a pure TCP passthrough tunnel
@@ -192,22 +191,32 @@ func (l *DebugListener) Accept() (net.Conn, error) {
 							wg.Add(2)
 
 							// Copy from client to target
-							go func() {
+							go func(connReqID string) {
 								defer wg.Done()
-								io.Copy(targetConn, conn)
-							}()
+								n, err := io.Copy(targetConn, conn)
+								if err != nil && err != io.EOF {
+									l.server.logger.DebugWithRequestIDf(connReqID, "[TCP-COPY] Error copying from client to target: %v", err)
+								} else if n > 0 {
+									l.server.logger.DebugWithRequestIDf(connReqID, "[TCP-COPY] Copied %d bytes from client to target", n)
+								}
+							}(reqID)
 
 							// Copy from target to client
-							go func() {
+							go func(connReqID string) {
 								defer wg.Done()
-								io.Copy(conn, targetConn)
-							}()
+								n, err := io.Copy(conn, targetConn)
+								if err != nil && err != io.EOF {
+									l.server.logger.DebugWithRequestIDf(connReqID, "[TCP-COPY] Error copying from target to client: %v", err)
+								} else if n > 0 {
+									l.server.logger.DebugWithRequestIDf(connReqID, "[TCP-COPY] Copied %d bytes from target to client", n)
+								}
+							}(reqID)
 
 							// Wait for both copy operations to complete
 							wg.Wait()
 
 							l.server.logger.InfoWithRequestIDf(reqID, "[TUNNEL-TCP-DIRECT] Direct TCP tunnel closed between %s and %s", clientIP, destAddr)
-							fmt.Printf("[DEBUG-DIRECT-TUNNEL-TCP-DIRECT] Direct TCP tunnel closed between %s and %s\n", clientIP, destAddr)
+							l.server.logger.DebugWithRequestIDf(reqID, "[DIRECT-TUNNEL-TCP-DIRECT] Direct TCP tunnel closed between %s and %s", clientIP, destAddr)
 						}()
 
 						// Instead of returning an error, return a dummy connection that will be ignored by the HTTP server
@@ -222,7 +231,7 @@ func (l *DebugListener) Accept() (net.Conn, error) {
 			}
 		}
 	} else {
-		fmt.Printf("[DEBUG-TCP-ACCEPT] Connection is not a TCP connection, cannot get original destination\n")
+		l.server.logger.Debugf("[TCP-ACCEPT] Connection is not a TCP connection, cannot get original destination")
 	}
 
 	// Create the debug connection with default values
@@ -263,27 +272,37 @@ func (c *DebugConnection) Read(b []byte) (n int, err error) {
 
 	n, err = c.Conn.Read(b)
 	if err != nil && err != net.ErrClosed {
-		fmt.Printf("[DEBUG-TCP-READ] Error reading from %s: %v\n", c.Conn.RemoteAddr(), err)
+		// Use reqID if available, otherwise use a placeholder
+		reqID := c.reqID
+		if reqID == "" {
+			reqID = "NO-REQ-ID"
+		}
+
+		c.server.logger.DebugWithRequestIDf(reqID, "[TCP-READ] Error reading from %s: %v", c.Conn.RemoteAddr(), err)
 
 		// Check for connection reset by peer or broken pipe
 		if strings.Contains(err.Error(), "connection reset by peer") ||
 			strings.Contains(err.Error(), "broken pipe") {
 			// Log the connection reset
-			fmt.Printf("[DEBUG-TCP-READ] Connection reset detected for %s - this should be treated as a test failure\n",
+			c.server.logger.DebugWithRequestIDf(reqID, "[TCP-READ] Connection reset detected for %s - this should be treated as a test failure",
 				c.Conn.RemoteAddr())
 
 			// If we have a server reference and domain, call HandleConnectionReset
 			if c.server != nil && c.domain != "" {
-				fmt.Printf("[DEBUG-TCP-READ] Calling HandleConnectionReset for domain %s from client %s\n",
+				c.server.logger.DebugWithRequestIDf(reqID, "[TCP-READ] Calling HandleConnectionReset for domain %s from client %s",
 					c.domain, c.clientIP)
 				c.server.HandleConnectionReset(c.clientIP, c.domain)
 			} else {
-				fmt.Printf("[DEBUG-TCP-READ] Cannot call HandleConnectionReset: server=%v, domain=%s\n",
+				c.server.logger.DebugWithRequestIDf(reqID, "[TCP-READ] Cannot call HandleConnectionReset: server=%v, domain=%s",
 					c.server != nil, c.domain)
 			}
 		}
 	} else if n > 0 {
-		fmt.Printf("[DEBUG-TCP-READ] Read %d bytes from %s\n", n, c.Conn.RemoteAddr())
+		if c.reqID != "" {
+			c.server.logger.DebugWithRequestIDf(c.reqID, "[TCP-READ] Read %d bytes from %s", n, c.Conn.RemoteAddr())
+		} else {
+			c.server.logger.Debugf("[TCP-READ] Read %d bytes from %s", n, c.Conn.RemoteAddr())
+		}
 	}
 	return
 }
@@ -297,10 +316,16 @@ func (c *DebugConnection) Write(b []byte) (n int, err error) {
 		return c.Conn.Write(b)
 	}
 
+	// Use reqID if available, otherwise use a placeholder
+	reqID := c.reqID
+	if reqID == "" {
+		reqID = "NO-REQ-ID"
+	}
+
 	// Log the data being written for debugging
 	if len(b) <= 20 {
 		// For small writes, log the actual bytes
-		fmt.Printf("[DEBUG-TCP-WRITE-DATA] Writing %d bytes to %s: %v\n", len(b), c.Conn.RemoteAddr(), b)
+		c.server.logger.DebugWithRequestIDf(reqID, "[TCP-WRITE-DATA] Writing %d bytes to %s: %v", len(b), c.Conn.RemoteAddr(), b)
 
 		// Also try to interpret as ASCII
 		asciiStr := ""
@@ -311,33 +336,33 @@ func (c *DebugConnection) Write(b []byte) (n int, err error) {
 				asciiStr += "."
 			}
 		}
-		fmt.Printf("[DEBUG-TCP-WRITE-ASCII] ASCII interpretation: %s\n", asciiStr)
+		c.server.logger.DebugWithRequestIDf(reqID, "[TCP-WRITE-ASCII] ASCII interpretation: %s", asciiStr)
 	}
 
 	n, err = c.Conn.Write(b)
 	if err != nil {
-		fmt.Printf("[DEBUG-TCP-WRITE] Error writing to %s: %v\n", c.Conn.RemoteAddr(), err)
+		c.server.logger.DebugWithRequestIDf(reqID, "[TCP-WRITE] Error writing to %s: %v", c.Conn.RemoteAddr(), err)
 
 		// Check for connection reset by peer or broken pipe
 		if strings.Contains(err.Error(), "connection reset by peer") ||
 			strings.Contains(err.Error(), "broken pipe") ||
 			strings.Contains(err.Error(), "write: broken pipe") {
 			// Log the connection reset
-			fmt.Printf("[DEBUG-TCP-WRITE] Connection reset detected for %s - this should be treated as a test failure\n",
+			c.server.logger.DebugWithRequestIDf(reqID, "[TCP-WRITE] Connection reset detected for %s - this should be treated as a test failure",
 				c.Conn.RemoteAddr())
 
 			// If we have a server reference and domain, call HandleConnectionReset
 			if c.server != nil && c.domain != "" {
-				fmt.Printf("[DEBUG-TCP-WRITE] Calling HandleConnectionReset for domain %s from client %s\n",
+				c.server.logger.DebugWithRequestIDf(reqID, "[TCP-WRITE] Calling HandleConnectionReset for domain %s from client %s",
 					c.domain, c.clientIP)
 				c.server.HandleConnectionReset(c.clientIP, c.domain)
 			} else {
-				fmt.Printf("[DEBUG-TCP-WRITE] Cannot call HandleConnectionReset: server=%v, domain=%s\n",
+				c.server.logger.DebugWithRequestIDf(reqID, "[TCP-WRITE] Cannot call HandleConnectionReset: server=%v, domain=%s",
 					c.server != nil, c.domain)
 			}
 		}
 	} else if n > 0 {
-		fmt.Printf("[DEBUG-TCP-WRITE] Wrote %d bytes to %s\n", n, c.Conn.RemoteAddr())
+		c.server.logger.DebugWithRequestIDf(reqID, "[TCP-WRITE] Wrote %d bytes to %s", n, c.Conn.RemoteAddr())
 	}
 	return
 }
@@ -351,7 +376,13 @@ func (c *DebugConnection) Close() error {
 		return c.Conn.Close()
 	}
 
-	fmt.Printf("[DEBUG-TCP-CLOSE] Closing connection to %s\n", c.Conn.RemoteAddr())
+	// Use reqID if available, otherwise use a placeholder
+	reqID := c.reqID
+	if reqID == "" {
+		reqID = "NO-REQ-ID"
+	}
+
+	c.server.logger.DebugWithRequestIDf(reqID, "[TCP-CLOSE] Closing connection to %s", c.Conn.RemoteAddr())
 	return c.Conn.Close()
 }
 
@@ -373,7 +404,13 @@ func (c *DebugConnection) SetWriteDeadline(t time.Time) error {
 // SetDomain sets the domain for this connection
 func (c *DebugConnection) SetDomain(domain string) {
 	if domain != "" && c.domain != domain {
-		fmt.Printf("[DEBUG-TCP-DOMAIN] Setting domain for connection %s to %s\n", c.Conn.RemoteAddr(), domain)
+		// Use reqID if available, otherwise use a placeholder
+		reqID := c.reqID
+		if reqID == "" {
+			reqID = "NO-REQ-ID"
+		}
+
+		c.server.logger.DebugWithRequestIDf(reqID, "[TCP-DOMAIN] Setting domain for connection %s to %s", c.Conn.RemoteAddr(), domain)
 		c.domain = domain
 	}
 }
@@ -381,7 +418,13 @@ func (c *DebugConnection) SetDomain(domain string) {
 // SetClientIP sets the client IP for this connection
 func (c *DebugConnection) SetClientIP(clientIP string) {
 	if clientIP != "" && c.clientIP != clientIP {
-		fmt.Printf("[DEBUG-TCP-CLIENT] Setting client IP for connection %s to %s\n", c.Conn.RemoteAddr(), clientIP)
+		// Use reqID if available, otherwise use a placeholder
+		reqID := c.reqID
+		if reqID == "" {
+			reqID = "NO-REQ-ID"
+		}
+
+		c.server.logger.DebugWithRequestIDf(reqID, "[TCP-CLIENT] Setting client IP for connection %s to %s", c.Conn.RemoteAddr(), clientIP)
 		c.clientIP = clientIP
 	}
 }
@@ -389,7 +432,8 @@ func (c *DebugConnection) SetClientIP(clientIP string) {
 // SetRequestID sets the request ID for this connection
 func (c *DebugConnection) SetRequestID(reqID string) {
 	if reqID != "" && c.reqID != reqID {
-		fmt.Printf("[DEBUG-TCP-REQID] Setting request ID for connection %s to %s\n", c.Conn.RemoteAddr(), reqID)
+		// For this method, we can't use the request ID in the log message since we're setting it
+		c.server.logger.Debugf("[TCP-REQID] Setting request ID for connection %s to %s", c.Conn.RemoteAddr(), reqID)
 		c.reqID = reqID
 	}
 }
@@ -397,7 +441,13 @@ func (c *DebugConnection) SetRequestID(reqID string) {
 // SetDirectTunnel marks this connection for direct tunnel mode
 func (c *DebugConnection) SetDirectTunnel(directTunnel bool) {
 	if c.directTunnel != directTunnel {
-		fmt.Printf("[DEBUG-TCP-TUNNEL] Setting direct tunnel mode for connection %s to %v\n", c.Conn.RemoteAddr(), directTunnel)
+		// Use reqID if available, otherwise use a placeholder
+		reqID := c.reqID
+		if reqID == "" {
+			reqID = "NO-REQ-ID"
+		}
+
+		c.server.logger.DebugWithRequestIDf(reqID, "[TCP-TUNNEL] Setting direct tunnel mode for connection %s to %v", c.Conn.RemoteAddr(), directTunnel)
 		c.directTunnel = directTunnel
 	}
 }
@@ -411,7 +461,14 @@ func (c *DebugConnection) IsDirectTunnel() bool {
 func (c *DebugConnection) SetOriginalDestination(ip string, port int) {
 	c.origDestIP = ip
 	c.origDestPort = port
-	fmt.Printf("[DEBUG-TCP-ORIGDST] Setting original destination for connection %s to %s:%d\n",
+
+	// Use reqID if available, otherwise use a placeholder
+	reqID := c.reqID
+	if reqID == "" {
+		reqID = "NO-REQ-ID"
+	}
+
+	c.server.logger.DebugWithRequestIDf(reqID, "[TCP-ORIGDST] Setting original destination for connection %s to %s:%d",
 		c.Conn.RemoteAddr(), ip, port)
 }
 
@@ -435,27 +492,27 @@ func (l *DirectTunnelListener) Accept() (net.Conn, error) {
 		return nil, err
 	}
 
-	fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER-ACCEPT] Accepted connection from %s to %s\n",
+	l.server.logger.Debugf("[DIRECT-TUNNEL-LISTENER-ACCEPT] Accepted connection from %s to %s",
 		conn.RemoteAddr(), conn.LocalAddr())
 
 	// Check if this is a DebugConnection
 	debugConn, ok := conn.(*DebugConnection)
 	if !ok {
 		// If it's not a DebugConnection, just return it as-is
-		fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER-ACCEPT] Connection is not a DebugConnection, returning as-is\n")
+		l.server.logger.Debugf("[DIRECT-TUNNEL-LISTENER-ACCEPT] Connection is not a DebugConnection, returning as-is")
 		return conn, nil
 	}
 
-	fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER-ACCEPT] Connection is a DebugConnection\n")
+	l.server.logger.Debugf("[DIRECT-TUNNEL-LISTENER-ACCEPT] Connection is a DebugConnection")
 
 	// Get the original destination IP and port
 	origDestIP, origDestPort := debugConn.GetOriginalDestination()
-	fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER-ACCEPT] Original destination: %s:%d\n",
+	l.server.logger.Debugf("[DIRECT-TUNNEL-LISTENER-ACCEPT] Original destination: %s:%d",
 		origDestIP, origDestPort)
 
 	if origDestIP == "" {
 		// If we don't have an original destination, just return the connection as-is
-		fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER-ACCEPT] No original destination, returning connection as-is\n")
+		l.server.logger.Debugf("[DIRECT-TUNNEL-LISTENER-ACCEPT] No original destination, returning connection as-is")
 		return conn, nil
 	}
 
@@ -464,24 +521,24 @@ func (l *DirectTunnelListener) Accept() (net.Conn, error) {
 	directTunnel := l.server.directTunnelDomains[origDestIP]
 
 	// Log the direct tunnel domains map for debugging
-	fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER] Checking if IP %s is marked for direct tunnel: %v\n",
+	l.server.logger.Debugf("[DIRECT-TUNNEL-LISTENER] Checking if IP %s is marked for direct tunnel: %v",
 		origDestIP, directTunnel)
-	fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER] Current directTunnelDomains map contents:\n")
+	l.server.logger.Debugf("[DIRECT-TUNNEL-LISTENER] Current directTunnelDomains map contents:")
 	for domain := range l.server.directTunnelDomains {
-		fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER]   %s\n", domain)
+		l.server.logger.Debugf("[DIRECT-TUNNEL-LISTENER]   %s", domain)
 	}
 
 	// If the IP is not marked for direct tunnel, check if we have a domain for this connection
 	// that is marked for direct tunnel
 	if !directTunnel && debugConn.domain != "" {
 		directTunnel = l.server.directTunnelDomains[debugConn.domain]
-		fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER] Checking if domain %s is marked for direct tunnel: %v\n",
+		l.server.logger.Debugf("[DIRECT-TUNNEL-LISTENER] Checking if domain %s is marked for direct tunnel: %v",
 			debugConn.domain, directTunnel)
 
 		// If the domain is marked for direct tunnel, also mark the IP for future connections
 		if directTunnel && origDestIP != "" {
 			l.server.directTunnelDomains[origDestIP] = true
-			fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER] Marking IP %s for direct tunnel mode based on domain %s\n",
+			l.server.logger.Debugf("[DIRECT-TUNNEL-LISTENER] Marking IP %s for direct tunnel mode based on domain %s",
 				origDestIP, debugConn.domain)
 		}
 	}
@@ -489,8 +546,8 @@ func (l *DirectTunnelListener) Accept() (net.Conn, error) {
 
 	if directTunnel {
 		// This connection should use direct tunnel mode
-		fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER] Original destination IP %s is marked for direct tunnel mode\n", origDestIP)
-		fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER] Using direct TCP tunnel for connection from %s to %s:%d\n",
+		l.server.logger.Debugf("[DIRECT-TUNNEL-LISTENER] Original destination IP %s is marked for direct tunnel mode", origDestIP)
+		l.server.logger.Debugf("[DIRECT-TUNNEL-LISTENER] Using direct TCP tunnel for connection from %s to %s:%d",
 			debugConn.clientIP, origDestIP, origDestPort)
 
 		// Get a request ID for this connection
@@ -504,11 +561,11 @@ func (l *DirectTunnelListener) Accept() (net.Conn, error) {
 		destAddr := net.JoinHostPort(origDestIP, strconv.Itoa(origDestPort))
 
 		// Connect directly to the target server
-		fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER] Connecting to %s\n", destAddr)
+		l.server.logger.DebugWithRequestIDf(reqID, "[DIRECT-TUNNEL-LISTENER] Connecting to %s", destAddr)
 		targetConn, err := net.DialTimeout("tcp", destAddr, 30*time.Second)
 		if err != nil {
 			l.server.logger.ErrorWithRequestIDf(reqID, "[ERROR] Failed to connect to target %s: %v", destAddr, err)
-			fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER] Connection failed to %s: %v\n", destAddr, err)
+			l.server.logger.DebugWithRequestIDf(reqID, "[DIRECT-TUNNEL-LISTENER] Connection failed to %s: %v", destAddr, err)
 			conn.Close()
 
 			// Return a dummy connection to prevent the HTTP server from exiting with an error
@@ -518,7 +575,7 @@ func (l *DirectTunnelListener) Accept() (net.Conn, error) {
 			}, nil
 		}
 
-		fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER] Successfully connected to %s (local: %s, remote: %s)\n",
+		l.server.logger.DebugWithRequestIDf(reqID, "[DIRECT-TUNNEL-LISTENER] Successfully connected to %s (local: %s, remote: %s)",
 			destAddr, targetConn.LocalAddr(), targetConn.RemoteAddr())
 
 		// Log that we're starting a pure TCP passthrough tunnel
@@ -538,23 +595,33 @@ func (l *DirectTunnelListener) Accept() (net.Conn, error) {
 			wg.Add(2)
 
 			// Copy from client to target
-			go func() {
+			go func(connReqID string) {
 				defer wg.Done()
-				io.Copy(targetConn, conn)
-			}()
+				n, err := io.Copy(targetConn, conn)
+				if err != nil && err != io.EOF {
+					l.server.logger.DebugWithRequestIDf(connReqID, "[TCP-COPY] Error copying from client to target: %v", err)
+				} else if n > 0 {
+					l.server.logger.DebugWithRequestIDf(connReqID, "[TCP-COPY] Copied %d bytes from client to target", n)
+				}
+			}(reqID)
 
 			// Copy from target to client
-			go func() {
+			go func(connReqID string) {
 				defer wg.Done()
-				io.Copy(conn, targetConn)
-			}()
+				n, err := io.Copy(conn, targetConn)
+				if err != nil && err != io.EOF {
+					l.server.logger.DebugWithRequestIDf(connReqID, "[TCP-COPY] Error copying from target to client: %v", err)
+				} else if n > 0 {
+					l.server.logger.DebugWithRequestIDf(connReqID, "[TCP-COPY] Copied %d bytes from target to client", n)
+				}
+			}(reqID)
 
 			// Wait for both copy operations to complete
 			wg.Wait()
 
 			l.server.logger.InfoWithRequestIDf(reqID, "[TUNNEL-TCP-DIRECT] Direct TCP tunnel closed between %s and %s",
 				debugConn.clientIP, destAddr)
-			fmt.Printf("[DEBUG-DIRECT-TUNNEL-LISTENER] Direct TCP tunnel closed between %s and %s\n",
+			l.server.logger.DebugWithRequestIDf(reqID, "[DIRECT-TUNNEL-LISTENER] Direct TCP tunnel closed between %s and %s",
 				debugConn.clientIP, destAddr)
 		}()
 
