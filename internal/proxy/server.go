@@ -894,6 +894,11 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 			s.logger.InfoWithRequestIDf(reqID, "[DOMAIN] Domain %s status: CurrentTestIndex=%d, TestsCompleted=%v, SuccessfulTestSet=%v",
 				hostWithoutPort, domainStatus.CurrentTestIndex, domainStatus.TestsCompleted, domainStatus.SuccessfulTestSet)
 
+			// Double-check that if TestsCompleted is true, we're properly handling it
+			if domainStatus.TestsCompleted {
+				s.logger.InfoWithRequestIDf(reqID, "[DOMAIN-CHECK] Domain %s has TestsCompleted=true, checking if we should use direct tunnel", hostWithoutPort)
+			}
+
 			// If all tests are completed and none succeeded, use direct tunnel
 			if domainStatus.TestsCompleted && !domainStatus.SuccessfulTestSet {
 				useTunnel = true

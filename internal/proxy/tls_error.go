@@ -121,6 +121,13 @@ func (l *tlsErrorLogger) Write(p []byte) (n int, err error) {
 				l.server.directTunnelMu.Unlock()
 
 				l.server.logger.Debugf("Domain %s has already completed all tests with no success, ignoring TLS handshake error and using DirectTunnel", domain)
+
+				// We need to find the connection for this client IP and domain
+				// Since we don't have direct access to the connection in the TLS error handler,
+				// we'll just make sure the domain is marked for direct tunnel mode
+				// Future connections to this domain will use direct tunnel mode automatically
+				l.server.logger.Infof("[TUNNEL-TLS-ERROR] Domain %s marked for direct tunnel mode", domain)
+
 				return len(p), nil
 			}
 		}

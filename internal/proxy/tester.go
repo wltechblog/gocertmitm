@@ -252,6 +252,9 @@ func (t *Tester) GetNextTest(domain string) certificates.TestType {
 		// Reset the current test index to ensure we don't try to use an invalid test
 		status.CurrentTestIndex = 0
 
+		// Log this with a special tag to make it easier to track
+		t.logger.Infof("[DIRECT-TUNNEL-DECISION] Domain %s should use direct tunnel mode - all tests completed with no success", domain)
+
 		return certificates.DirectTunnel
 	}
 
