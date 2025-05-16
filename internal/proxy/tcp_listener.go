@@ -155,6 +155,13 @@ type DebugConnection struct {
 
 // Read reads data from the connection and logs it
 func (c *DebugConnection) Read(b []byte) (n int, err error) {
+	// If this connection is marked for direct tunnel mode, we should not log or process the data
+	// This is to prevent any interference with the direct tunnel
+	if c.directTunnel {
+		// Just pass through the read without any logging or processing
+		return c.Conn.Read(b)
+	}
+
 	n, err = c.Conn.Read(b)
 	if err != nil && err != net.ErrClosed {
 		fmt.Printf("[DEBUG-TCP-READ] Error reading from %s: %v\n", c.Conn.RemoteAddr(), err)
@@ -184,6 +191,13 @@ func (c *DebugConnection) Read(b []byte) (n int, err error) {
 
 // Write writes data to the connection and logs it
 func (c *DebugConnection) Write(b []byte) (n int, err error) {
+	// If this connection is marked for direct tunnel mode, we should not log or process the data
+	// This is to prevent any interference with the direct tunnel
+	if c.directTunnel {
+		// Just pass through the write without any logging or processing
+		return c.Conn.Write(b)
+	}
+
 	n, err = c.Conn.Write(b)
 	if err != nil {
 		fmt.Printf("[DEBUG-TCP-WRITE] Error writing to %s: %v\n", c.Conn.RemoteAddr(), err)
@@ -214,6 +228,13 @@ func (c *DebugConnection) Write(b []byte) (n int, err error) {
 
 // Close closes the connection and logs it
 func (c *DebugConnection) Close() error {
+	// If this connection is marked for direct tunnel mode, we should not log
+	// This is to prevent any interference with the direct tunnel
+	if c.directTunnel {
+		// Just pass through the close without any logging
+		return c.Conn.Close()
+	}
+
 	fmt.Printf("[DEBUG-TCP-CLOSE] Closing connection to %s\n", c.Conn.RemoteAddr())
 	return c.Conn.Close()
 }

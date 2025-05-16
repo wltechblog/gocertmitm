@@ -222,6 +222,9 @@ func (s *Server) handleDirectTunnelTCP(clientConn net.Conn, destIP string, destP
 	s.logger.InfoWithRequestIDf(reqID, "[TUNNEL-TCP] Starting direct TCP tunnel from %s to %s", clientIP, destAddr)
 	fmt.Printf("[DEBUG-DIRECT-TUNNEL-TCP] Starting direct TCP tunnel from %s to %s\n", clientIP, destAddr)
 
+	// IMPORTANT: We need to establish the outbound connection BEFORE reading any data from the client
+	// This ensures that we can immediately forward any data we read from the client to the target
+
 	// Connect directly to the target server
 	fmt.Printf("[DEBUG-DIRECT-TUNNEL-TCP] Connecting to %s\n", destAddr)
 	targetConn, err := net.DialTimeout("tcp", destAddr, 30*time.Second)
@@ -244,87 +247,49 @@ func (s *Server) handleDirectTunnelTCP(clientConn net.Conn, destIP string, destP
 	// the client and server without any inspection or modification
 	s.logger.InfoWithRequestIDf(reqID, "[TUNNEL-TCP] Pure passthrough mode - no data inspection or modification")
 
-	// Create a WaitGroup to wait for both goroutines to complete
-	var wg sync.WaitGroup
-	wg.Add(2)
+	// Use io.Copy for simple, efficient bidirectional copying
+	// This is more efficient than our custom loop and less prone to errors
 
-	// Simple bidirectional copy without any protocol inspection or deadlines
-	// This is a true passthrough tunnel that just copies bytes in both directions
-
-	// Copy from target to client
-	go func() {
-		defer wg.Done()
-		defer clientConn.Close()
-		defer targetConn.Close()
-
-		// Use a large buffer for better performance
-		buf := make([]byte, 64*1024)
-
-		// Simple io.Copy loop without any deadlines or protocol inspection
-		for {
-			// Read from target without any deadline
-			n, err := targetConn.Read(buf)
-			if n > 0 {
-				// Write to client immediately without any processing
-				_, writeErr := clientConn.Write(buf[:n])
-				if writeErr != nil {
-					s.logger.DebugWithRequestIDf(reqID, "[TUNNEL-TCP] Write error to client: %v", writeErr)
-					return
-				}
-
-				// Log data flow periodically (only for large transfers)
-				if n > 1024 {
-					s.logger.DebugWithRequestIDf(reqID, "[TUNNEL-TCP] Forwarded %d bytes from target to client", n)
-				}
-			}
-
-			if err != nil {
-				if err != io.EOF {
-					s.logger.DebugWithRequestIDf(reqID, "[TUNNEL-TCP] Read error from target: %v", err)
-				}
-				return
-			}
-		}
-	}()
+	// Create a channel to signal when the connection is closed
+	done := make(chan struct{}, 2)
 
 	// Copy from client to target
 	go func() {
-		defer wg.Done()
-		defer clientConn.Close()
-		defer targetConn.Close()
-
-		// Use a large buffer for better performance
-		buf := make([]byte, 64*1024)
-
-		// Simple io.Copy loop without any deadlines or protocol inspection
-		for {
-			// Read from client without any deadline
-			n, err := clientConn.Read(buf)
-			if n > 0 {
-				// Write to target immediately without any processing
-				_, writeErr := targetConn.Write(buf[:n])
-				if writeErr != nil {
-					s.logger.DebugWithRequestIDf(reqID, "[TUNNEL-TCP] Write error to target: %v", writeErr)
-					return
-				}
-
-				// Log data flow periodically (only for large transfers)
-				if n > 1024 {
-					s.logger.DebugWithRequestIDf(reqID, "[TUNNEL-TCP] Forwarded %d bytes from client to target", n)
-				}
-			}
-
-			if err != nil {
-				if err != io.EOF {
-					s.logger.DebugWithRequestIDf(reqID, "[TUNNEL-TCP] Read error from client: %v", err)
-				}
-				return
-			}
+		// Use io.Copy for efficient copying
+		n, err := io.Copy(targetConn, clientConn)
+		if err != nil && err != io.EOF {
+			s.logger.DebugWithRequestIDf(reqID, "[TUNNEL-TCP] Error copying from client to target: %v", err)
+		} else {
+			s.logger.DebugWithRequestIDf(reqID, "[TUNNEL-TCP] Copied %d bytes from client to target", n)
 		}
+
+		// Signal that we're done
+		done <- struct{}{}
 	}()
 
-	// Wait for both goroutines to complete
-	wg.Wait()
+	// Copy from target to client
+	go func() {
+		// Use io.Copy for efficient copying
+		n, err := io.Copy(clientConn, targetConn)
+		if err != nil && err != io.EOF {
+			s.logger.DebugWithRequestIDf(reqID, "[TUNNEL-TCP] Error copying from target to client: %v", err)
+		} else {
+			s.logger.DebugWithRequestIDf(reqID, "[TUNNEL-TCP] Copied %d bytes from target to client", n)
+		}
+
+		// Signal that we're done
+		done <- struct{}{}
+	}()
+
+	// Wait for either goroutine to finish
+	<-done
+
+	// Close both connections
+	clientConn.Close()
+	targetConn.Close()
+
+	// Wait for the other goroutine to finish (it will finish quickly once the connections are closed)
+	<-done
 
 	s.logger.InfoWithRequestIDf(reqID, "[TUNNEL-TCP] Direct TCP tunnel closed between %s and %s", clientIP, destAddr)
 	fmt.Printf("[DEBUG-DIRECT-TUNNEL-TCP] Direct TCP tunnel closed between %s and %s\n", clientIP, destAddr)
