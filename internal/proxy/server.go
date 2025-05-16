@@ -132,12 +132,12 @@ func NewServer(httpAddr, httpsAddr string, certManager *certificates.Manager, lo
 // Start starts the proxy server
 func (s *Server) Start() error {
 	// Create debug listeners for HTTP and HTTPS
-	httpListener, err := NewDebugListener(s.httpAddr)
+	httpListener, err := NewDebugListener(s.httpAddr, s)
 	if err != nil {
 		return fmt.Errorf("failed to create HTTP listener: %v", err)
 	}
 
-	httpsListener, err := NewDebugListener(s.httpsAddr)
+	httpsListener, err := NewDebugListener(s.httpsAddr, s)
 	if err != nil {
 		return fmt.Errorf("failed to create HTTPS listener: %v", err)
 	}

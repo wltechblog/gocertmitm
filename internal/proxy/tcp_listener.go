@@ -11,10 +11,11 @@ import (
 // DebugListener is a wrapper around net.Listener that logs connections as soon as they're accepted
 type DebugListener struct {
 	net.Listener
+	server *Server // Reference to the server instance
 }
 
 // NewDebugListener creates a new DebugListener
-func NewDebugListener(addr string) (*DebugListener, error) {
+func NewDebugListener(addr string, server *Server) (*DebugListener, error) {
 	// Create a TCP listener
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -23,7 +24,19 @@ func NewDebugListener(addr string) (*DebugListener, error) {
 
 	return &DebugListener{
 		Listener: listener,
+		server:   server,
 	}, nil
+}
+
+// NewDebugConnection creates a new DebugConnection
+func NewDebugConnection(conn net.Conn, server *Server, domain, clientIP, reqID string) *DebugConnection {
+	return &DebugConnection{
+		Conn:     conn,
+		server:   server,
+		domain:   domain,
+		clientIP: clientIP,
+		reqID:    reqID,
+	}
 }
 
 // Accept accepts a connection and logs it immediately
@@ -81,15 +94,26 @@ func (l *DebugListener) Accept() (net.Conn, error) {
 		fmt.Printf("[DEBUG-TCP-ACCEPT] Connection is not a TCP connection, cannot get original destination\n")
 	}
 
+	// Extract client IP for logging
+	clientIP, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
+
 	// Wrap the connection to add more debugging
+	// We don't know the domain or request ID yet, so we'll set them to empty strings
+	// They can be updated later when we have more information
 	return &DebugConnection{
-		Conn: conn,
+		Conn:     conn,
+		server:   l.server,
+		clientIP: clientIP,
 	}, nil
 }
 
 // DebugConnection is a wrapper around net.Conn that logs read/write operations
 type DebugConnection struct {
 	net.Conn
+	server   *Server // Reference to the server instance
+	domain   string  // Domain being accessed
+	clientIP string  // Client IP address
+	reqID    string  // Request ID for logging
 }
 
 // Read reads data from the connection and logs it
@@ -101,13 +125,19 @@ func (c *DebugConnection) Read(b []byte) (n int, err error) {
 		// Check for connection reset by peer or broken pipe
 		if strings.Contains(err.Error(), "connection reset by peer") ||
 			strings.Contains(err.Error(), "broken pipe") {
-			// Try to extract the server from the connection context
-			// This is a best-effort attempt to find the domain being tested
-			// We need to find a way to get the Server instance here
-
-			// For now, we'll just log it and rely on the tlsErrorLogger to handle it
+			// Log the connection reset
 			fmt.Printf("[DEBUG-TCP-READ] Connection reset detected for %s - this should be treated as a test failure\n",
 				c.Conn.RemoteAddr())
+
+			// If we have a server reference and domain, call HandleConnectionReset
+			if c.server != nil && c.domain != "" {
+				fmt.Printf("[DEBUG-TCP-READ] Calling HandleConnectionReset for domain %s from client %s\n",
+					c.domain, c.clientIP)
+				c.server.HandleConnectionReset(c.clientIP, c.domain)
+			} else {
+				fmt.Printf("[DEBUG-TCP-READ] Cannot call HandleConnectionReset: server=%v, domain=%s\n",
+					c.server != nil, c.domain)
+			}
 		}
 	} else if n > 0 {
 		fmt.Printf("[DEBUG-TCP-READ] Read %d bytes from %s\n", n, c.Conn.RemoteAddr())
@@ -128,6 +158,16 @@ func (c *DebugConnection) Write(b []byte) (n int, err error) {
 			// Log the connection reset
 			fmt.Printf("[DEBUG-TCP-WRITE] Connection reset detected for %s - this should be treated as a test failure\n",
 				c.Conn.RemoteAddr())
+
+			// If we have a server reference and domain, call HandleConnectionReset
+			if c.server != nil && c.domain != "" {
+				fmt.Printf("[DEBUG-TCP-WRITE] Calling HandleConnectionReset for domain %s from client %s\n",
+					c.domain, c.clientIP)
+				c.server.HandleConnectionReset(c.clientIP, c.domain)
+			} else {
+				fmt.Printf("[DEBUG-TCP-WRITE] Cannot call HandleConnectionReset: server=%v, domain=%s\n",
+					c.server != nil, c.domain)
+			}
 		}
 	} else if n > 0 {
 		fmt.Printf("[DEBUG-TCP-WRITE] Wrote %d bytes to %s\n", n, c.Conn.RemoteAddr())
