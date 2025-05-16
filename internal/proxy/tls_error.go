@@ -112,6 +112,17 @@ func (l *tlsErrorLogger) Write(p []byte) (n int, err error) {
 		if domainStatus != nil {
 			l.server.logger.Debugf("Before failure - Domain %s status: CurrentTestIndex=%d, TestsCompleted=%v, SuccessfulTestSet=%v",
 				domain, domainStatus.CurrentTestIndex, domainStatus.TestsCompleted, domainStatus.SuccessfulTestSet)
+
+			// If we've already completed all tests with no success, we should be in direct tunnel mode
+			if domainStatus.TestsCompleted && !domainStatus.SuccessfulTestSet {
+				// Make sure this domain is in the direct tunnel map
+				l.server.directTunnelMu.Lock()
+				l.server.directTunnelDomains[domain] = true
+				l.server.directTunnelMu.Unlock()
+
+				l.server.logger.Debugf("Domain %s has already completed all tests with no success, ignoring TLS handshake error and using DirectTunnel", domain)
+				return len(p), nil
+			}
 		}
 
 		// Get the current test type for this domain
@@ -121,6 +132,12 @@ func (l *tlsErrorLogger) Write(p []byte) (n int, err error) {
 		if testType == certificates.DirectTunnel {
 			// We're already in direct tunnel mode, so we should ignore this error
 			l.server.logger.Debugf("Ignoring TLS handshake error for domain %s as test type is DirectTunnel", domain)
+
+			// Make sure this domain is in the direct tunnel map
+			l.server.directTunnelMu.Lock()
+			l.server.directTunnelDomains[domain] = true
+			l.server.directTunnelMu.Unlock()
+
 			return len(p), nil
 		}
 

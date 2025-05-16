@@ -743,6 +743,48 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		s.directTunnelMu.Unlock()
 	}
 
+	// Check if the domain has completed all tests with no success
+	if !useTunnel {
+		// Get the domain test status
+		domainStatus := s.tester.GetTestStatus(hostWithoutPort)
+		if domainStatus != nil {
+			s.logger.DebugWithRequestIDf(reqID, "[CONNECT] Domain %s status: CurrentTestIndex=%d, TestsCompleted=%v, SuccessfulTestSet=%v",
+				hostWithoutPort, domainStatus.CurrentTestIndex, domainStatus.TestsCompleted, domainStatus.SuccessfulTestSet)
+
+			// If we've already completed all tests with no success, we should be in direct tunnel mode
+			if domainStatus.TestsCompleted && !domainStatus.SuccessfulTestSet {
+				useTunnel = true
+				s.logger.InfoWithRequestIDf(reqID, "[TUNNEL] Domain %s has completed all tests with no success, using DirectTunnel", hostWithoutPort)
+
+				// Make sure this domain is in the direct tunnel map
+				s.directTunnelMu.Lock()
+				s.directTunnelDomains[hostWithoutPort] = true
+				s.directTunnelMu.Unlock()
+			}
+		}
+
+		// Also check by IP if we have a destination IP
+		if !useTunnel && destIP != "" {
+			// Get the domain test status by IP
+			ipStatus := s.tester.GetTestStatusByIP(destIP)
+			if ipStatus != nil {
+				s.logger.DebugWithRequestIDf(reqID, "[CONNECT] IP %s status: CurrentTestIndex=%d, TestsCompleted=%v, SuccessfulTestSet=%v",
+					destIP, ipStatus.CurrentTestIndex, ipStatus.TestsCompleted, ipStatus.SuccessfulTestSet)
+
+				// If we've already completed all tests with no success, we should be in direct tunnel mode
+				if ipStatus.TestsCompleted && !ipStatus.SuccessfulTestSet {
+					useTunnel = true
+					s.logger.InfoWithRequestIDf(reqID, "[TUNNEL] IP %s has completed all tests with no success, using DirectTunnel", destIP)
+
+					// Make sure this IP is in the direct tunnel map
+					s.directTunnelMu.Lock()
+					s.directTunnelDomains[destIP] = true
+					s.directTunnelMu.Unlock()
+				}
+			}
+		}
+	}
+
 	// If not already marked for direct tunnel, check the tester
 	if !useTunnel && s.autoTest {
 		// Check the domain status first to see if all tests have been completed
@@ -1371,6 +1413,24 @@ func (s *Server) HandleConnectionReset(clientIP, domain string) {
 	// Get a request ID for this connection
 	reqID := s.logger.GetRequestID(clientIP, domain)
 
+	// Get the domain test status before checking anything else
+	domainStatus := s.tester.GetTestStatus(domain)
+	if domainStatus != nil {
+		s.logger.DebugWithRequestIDf(reqID, "[CONN-RESET] Domain %s status before handling reset: CurrentTestIndex=%d, TestsCompleted=%v, SuccessfulTestSet=%v",
+			domain, domainStatus.CurrentTestIndex, domainStatus.TestsCompleted, domainStatus.SuccessfulTestSet)
+
+		// If we've already completed all tests with no success, we should be in direct tunnel mode
+		if domainStatus.TestsCompleted && !domainStatus.SuccessfulTestSet {
+			// Make sure this domain is in the direct tunnel map
+			s.directTunnelMu.Lock()
+			s.directTunnelDomains[domain] = true
+			s.directTunnelMu.Unlock()
+
+			s.logger.InfoWithRequestIDf(reqID, "[CONN-RESET] Domain %s has already completed all tests with no success, ignoring connection reset and using DirectTunnel", domain)
+			return
+		}
+	}
+
 	// Check if this domain is in the direct tunnel map
 	s.directTunnelMu.Lock()
 	isDirectTunnel := s.directTunnelDomains[domain]
@@ -1389,11 +1449,17 @@ func (s *Server) HandleConnectionReset(clientIP, domain string) {
 	if testType == certificates.DirectTunnel {
 		// We're already in direct tunnel mode, so we should ignore this error
 		s.logger.DebugWithRequestIDf(reqID, "[CONN-RESET] Ignoring connection reset for domain %s as test type is DirectTunnel", domain)
+
+		// Make sure this domain is in the direct tunnel map
+		s.directTunnelMu.Lock()
+		s.directTunnelDomains[domain] = true
+		s.directTunnelMu.Unlock()
+
 		return
 	}
 
-	// Get the domain test status before recording the failure
-	domainStatus := s.tester.GetTestStatus(domain)
+	// Get the domain test status before recording the failure (refresh it)
+	domainStatus = s.tester.GetTestStatus(domain)
 	if domainStatus != nil {
 		s.logger.DebugWithRequestIDf(reqID, "[DOMAIN] Before connection reset - Domain %s status: CurrentTestIndex=%d, TestsCompleted=%v, SuccessfulTestSet=%v",
 			domain, domainStatus.CurrentTestIndex, domainStatus.TestsCompleted, domainStatus.SuccessfulTestSet)

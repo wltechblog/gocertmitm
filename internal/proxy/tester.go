@@ -128,6 +128,12 @@ func (t *Tester) GetNextTest(domain string) certificates.TestType {
 
 	// Check if we have a status for this domain
 	status, exists := t.domains[domain]
+
+	// Log the current domain status for debugging
+	if exists {
+		t.logger.Debugf("[TEST-DEBUG] GetNextTest for domain %s - CurrentTestIndex=%d, TestsCompleted=%v, SuccessfulTestSet=%v",
+			domain, status.CurrentTestIndex, status.TestsCompleted, status.SuccessfulTestSet)
+	}
 	if !exists {
 		// Try to resolve the domain to an IP if it's not already an IP
 		var ip string
@@ -243,7 +249,23 @@ func (t *Tester) GetNextTest(domain string) certificates.TestType {
 		// This is a safety check to ensure we always use direct tunnel when all tests have failed
 		t.logger.Infof("[TUNNEL] Adding %s to direct tunnel domains map", domain)
 
+		// Reset the current test index to ensure we don't try to use an invalid test
+		status.CurrentTestIndex = 0
+
 		return certificates.DirectTunnel
+	}
+
+	// Double-check that the current test index is valid
+	if status.CurrentTestIndex >= len(t.testOrder) {
+		t.logger.Infof("[TEST-WARN] Domain %s has CurrentTestIndex=%d which is out of bounds (max=%d), resetting to 0",
+			domain, status.CurrentTestIndex, len(t.testOrder)-1)
+		status.CurrentTestIndex = 0
+
+		// If we've already tried all tests, mark as completed and use direct tunnel
+		if status.TestsCompleted && !status.SuccessfulTestSet {
+			t.logger.Infof("[TUNNEL] Domain %s has invalid test index and all tests completed with no success, using DirectTunnel", domain)
+			return certificates.DirectTunnel
+		}
 	}
 
 	// Validate the current test index
@@ -269,6 +291,16 @@ func (t *Tester) RecordTestResult(domain string, testType certificates.TestType,
 	if !exists {
 		t.logger.Errorf("[ERROR] Trying to record result for unknown domain: %s", domain)
 		return testType
+	}
+
+	// Log the current domain status for debugging
+	t.logger.Debugf("[TEST-DEBUG] RecordTestResult for domain %s - CurrentTestIndex=%d, TestsCompleted=%v, SuccessfulTestSet=%v, TestType=%s, Success=%v",
+		domain, status.CurrentTestIndex, status.TestsCompleted, status.SuccessfulTestSet, testType.GetTestTypeName(), success)
+
+	// If we're already in direct tunnel mode, don't record any more results
+	if status.TestsCompleted && !status.SuccessfulTestSet {
+		t.logger.Infof("[TUNNEL] Domain %s has already completed all tests with no success, ignoring new test result and using DirectTunnel", domain)
+		return certificates.DirectTunnel
 	}
 
 	// Record the result
@@ -305,6 +337,12 @@ func (t *Tester) RecordTestResult(domain string, testType certificates.TestType,
 
 	// Verify that the current test type matches the one we're recording a result for
 	// This ensures we're incrementing the correct test
+	if status.CurrentTestIndex < 0 || status.CurrentTestIndex >= len(t.testOrder) {
+		t.logger.Infof("[TEST-WARN] CurrentTestIndex %d is out of bounds for domain %s, resetting to 0",
+			status.CurrentTestIndex, domain)
+		status.CurrentTestIndex = 0
+	}
+
 	currentTest := t.testOrder[status.CurrentTestIndex]
 	if currentTest != testType {
 		t.logger.Debugf("[TEST] Warning: Recording failure for %s but current test is %s (index %d)",
@@ -333,12 +371,17 @@ func (t *Tester) RecordTestResult(domain string, testType certificates.TestType,
 	// If we've tried all tests, mark as completed
 	if status.CurrentTestIndex >= len(t.testOrder) {
 		status.TestsCompleted = true
+		status.CurrentTestIndex = 0 // Reset to 0 to avoid index out of bounds errors
 		t.logger.Infof("[COMPLETE] All tests completed for %s, no successful tests found", domain)
 
 		// Save the updated domain results to JSON
 		if err := t.SaveToJSON(); err != nil {
 			t.logger.Errorf("[ERROR] Failed to save domain results to JSON: %v", err)
 		}
+
+		// Log the final state of the domain
+		t.logger.Infof("[DOMAIN-FINAL] Domain %s final status: TestsCompleted=%v, SuccessfulTestSet=%v",
+			domain, status.TestsCompleted, status.SuccessfulTestSet)
 
 		return certificates.DirectTunnel // Special value indicating direct tunnel
 	}
@@ -827,6 +870,9 @@ func contains(slice []string, str string) bool {
 func (t *Tester) GetNextTestByIP(ip string) certificates.TestType {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
+
+	// Log that we're looking up a test by IP
+	t.logger.Debugf("[IP-TEST] Looking up next test for IP %s", ip)
 
 	// First, try to get the domain for this IP
 	domain, exists := t.ipToDomain[ip]
