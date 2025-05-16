@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/tls"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +26,38 @@ type DirectTunnelError struct {
 // Error implements the error interface
 func (e *DirectTunnelError) Error() string {
 	return fmt.Sprintf("direct tunnel requested for %s", e.Domain)
+}
+
+// directTunnelResponseWriter is a fake http.ResponseWriter that can be hijacked
+// for direct tunnel connections
+type directTunnelResponseWriter struct {
+	conn net.Conn
+	code int
+}
+
+// Header returns a dummy header map
+func (w *directTunnelResponseWriter) Header() http.Header {
+	return make(http.Header)
+}
+
+// Write writes to the connection
+func (w *directTunnelResponseWriter) Write(b []byte) (int, error) {
+	return w.conn.Write(b)
+}
+
+// WriteHeader sets the status code
+func (w *directTunnelResponseWriter) WriteHeader(code int) {
+	w.code = code
+}
+
+// Hijack returns the underlying connection
+func (w *directTunnelResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	// Create a buffered reader/writer for the connection
+	br := bufio.NewReader(w.conn)
+	bw := bufio.NewWriter(w.conn)
+	brw := bufio.NewReadWriter(br, bw)
+
+	return w.conn, brw, nil
 }
 
 // Server represents a proxy server
@@ -101,7 +135,61 @@ func NewServer(httpAddr, httpsAddr string, certManager *certificates.Manager, lo
 		Addr:    httpsAddr,
 		Handler: httpsHandler,
 		TLSConfig: &tls.Config{
-			GetCertificate:     certManager.GetCertificateFunc(server.testType),
+			GetCertificate: func(clientHello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+				// If auto-testing is enabled, use the auto-test certificate function
+				if server.autoTest {
+					cert, err := server.getAutoTestCertificateFunc()(clientHello)
+					if err != nil {
+						// Check if this is a DirectTunnelError
+						if dtErr, ok := err.(*DirectTunnelError); ok {
+							// This is a direct tunnel request, so we need to handle it specially
+							// We'll create a fake connection to the HTTPS server that will be handled by handleDirectTunnel
+							server.logger.Infof("[TUNNEL-TLS] DirectTunnelError for %s - initiating direct tunnel", dtErr.Domain)
+
+							// Get the client connection
+							conn := clientHello.Conn
+
+							// Create a fake HTTP request for the direct tunnel handler
+							req := &http.Request{
+								Method: "CONNECT",
+								Host:   dtErr.Domain + ":443", // Add port 443 for HTTPS
+								URL: &url.URL{
+									Host: dtErr.Domain,
+									Path: "/",
+								},
+								Proto:      "HTTP/1.1",
+								ProtoMajor: 1,
+								ProtoMinor: 1,
+								Header:     make(http.Header),
+								RemoteAddr: conn.RemoteAddr().String(),
+							}
+
+							// Create a fake response writer that will be hijacked
+							w := &directTunnelResponseWriter{
+								conn: conn,
+							}
+
+							// Handle the direct tunnel in a goroutine to avoid blocking
+							go func() {
+								server.logger.Infof("[TUNNEL-TLS] Starting direct tunnel for %s", dtErr.Domain)
+								server.handleDirectTunnel(w, req)
+							}()
+
+							// Return a dummy certificate to satisfy the TLS handshake
+							// This certificate will never be used because we're hijacking the connection
+							dummyCert, _ := server.certManager.GetCertificate("dummy.example.com", certificates.SelfSigned)
+							return dummyCert, nil
+						}
+
+						// For other errors, return them as-is
+						return nil, err
+					}
+					return cert, nil
+				}
+
+				// If auto-testing is disabled, use the standard certificate function
+				return certManager.GetCertificateFunc(server.testType)(clientHello)
+			},
 			MinVersion:         tls.VersionTLS12,
 			InsecureSkipVerify: false,            // We want clients to validate our certificates
 			ClientAuth:         tls.NoClientCert, // Don't require client certificates
@@ -203,13 +291,13 @@ func (s *Server) SetTestType(testType certificates.TestType) {
 func (s *Server) SetAutoTest(enabled bool) {
 	s.autoTest = enabled
 
+	// We don't need to update the certificate function anymore
+	// because we're now handling it in the TLSConfig.GetCertificate function
+	// which checks s.autoTest internally
+
 	if enabled {
-		// When auto-testing is enabled, use a custom certificate function
-		s.httpsServer.TLSConfig.GetCertificate = s.getAutoTestCertificateFunc()
 		s.logger.Infof("Automatic testing enabled - will try all test types for each domain")
 	} else {
-		// When auto-testing is disabled, use the standard certificate function
-		s.httpsServer.TLSConfig.GetCertificate = s.certManager.GetCertificateFunc(s.testType)
 		s.logger.Infof("Automatic testing disabled - using fixed test type: %s", s.testType.GetTestTypeName())
 	}
 }
