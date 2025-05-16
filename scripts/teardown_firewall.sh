@@ -11,6 +11,7 @@ fi
 # Define variables
 PROXY_PORT=9900
 PROXY_IP="127.0.0.1"
+TARGET_IP="192.168.82.118"  # Default IP to intercept (WAN side of OpenWRT router)
 ORIGINAL_RULES_FILE="/tmp/iptables_rules_backup.txt"
 ORIGINAL_IPV4_FORWARD_FILE="/tmp/ipv4_forward_backup.txt"
 VERBOSE=0
@@ -21,7 +22,18 @@ while [[ "$#" -gt 0 ]]; do
     -v|--verbose) VERBOSE=1 ;;
     -p|--port) PROXY_PORT="$2"; shift ;;
     -i|--ip) PROXY_IP="$2"; shift ;;
-    *) echo "Unknown parameter: $1"; exit 1 ;;
+    -t|--target) TARGET_IP="$2"; shift ;;
+    -h|--help)
+      echo "Usage: $0 [options]"
+      echo "Options:"
+      echo "  -v, --verbose         Enable verbose output"
+      echo "  -p, --port PORT       Set proxy port (default: 9900)"
+      echo "  -i, --ip IP           Set proxy IP (default: 127.0.0.1)"
+      echo "  -t, --target IP       Set target IP to intercept (default: 192.168.82.118)"
+      echo "  -h, --help            Show this help message"
+      exit 0
+      ;;
+    *) echo "Unknown parameter: $1"; echo "Use -h or --help for usage information"; exit 1 ;;
   esac
   shift
 done
@@ -66,14 +78,8 @@ if [ ! -f "$ORIGINAL_RULES_FILE" ]; then
 
   # Remove the specific rules we added
   echo "Removing DNAT rules..."
-  iptables -t nat -D PREROUTING -p tcp --dport 443 -j DNAT --to-destination $PROXY_IP:$PROXY_PORT 2>/dev/null
-  verbose "Removed PREROUTING DNAT rule"
-
-  iptables -t nat -D PREROUTING -p tcp --dport 443 -s $LOCAL_IP -j RETURN 2>/dev/null
-  verbose "Removed PREROUTING RETURN rule for $LOCAL_IP"
-
-  iptables -t nat -D PREROUTING -p tcp --dport 443 -s 127.0.0.1 -j RETURN 2>/dev/null
-  verbose "Removed PREROUTING RETURN rule for 127.0.0.1"
+  iptables -t nat -D PREROUTING -p tcp --dport 443 -s $TARGET_IP -j DNAT --to-destination $PROXY_IP:$PROXY_PORT 2>/dev/null
+  verbose "Removed PREROUTING DNAT rule for target IP $TARGET_IP"
 
   echo "Removing MASQUERADE rules..."
   if [ ! -z "$PRIMARY_INTERFACE" ]; then
@@ -85,9 +91,12 @@ if [ ! -f "$ORIGINAL_RULES_FILE" ]; then
   iptables -t mangle -D PREROUTING -p tcp --dport $PROXY_PORT -j MARK --set-mark 1 2>/dev/null
   verbose "Removed PREROUTING MARK rule"
 
-  echo "Removing INPUT rule for proxy port..."
+  echo "Removing INPUT rules..."
   iptables -D INPUT -p tcp --dport $PROXY_PORT -j ACCEPT 2>/dev/null
   verbose "Removed INPUT ACCEPT rule for port $PROXY_PORT"
+
+  iptables -D INPUT -p tcp -s $TARGET_IP -j ACCEPT 2>/dev/null
+  verbose "Removed INPUT ACCEPT rule for target IP $TARGET_IP"
 
   echo "Rules removed."
 

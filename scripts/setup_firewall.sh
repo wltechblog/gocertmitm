@@ -12,6 +12,7 @@ fi
 # Define variables
 PROXY_PORT=9900
 PROXY_IP="127.0.0.1"
+TARGET_IP="192.168.82.118"  # Default IP to intercept (WAN side of OpenWRT router)
 ORIGINAL_RULES_FILE="/tmp/iptables_rules_backup.txt"
 ORIGINAL_IPV4_FORWARD_FILE="/tmp/ipv4_forward_backup.txt"
 VERBOSE=0
@@ -22,7 +23,18 @@ while [[ "$#" -gt 0 ]]; do
     -v|--verbose) VERBOSE=1 ;;
     -p|--port) PROXY_PORT="$2"; shift ;;
     -i|--ip) PROXY_IP="$2"; shift ;;
-    *) echo "Unknown parameter: $1"; exit 1 ;;
+    -t|--target) TARGET_IP="$2"; shift ;;
+    -h|--help)
+      echo "Usage: $0 [options]"
+      echo "Options:"
+      echo "  -v, --verbose         Enable verbose output"
+      echo "  -p, --port PORT       Set proxy port (default: 9900)"
+      echo "  -i, --ip IP           Set proxy IP (default: 127.0.0.1)"
+      echo "  -t, --target IP       Set target IP to intercept (default: 192.168.82.118)"
+      echo "  -h, --help            Show this help message"
+      exit 0
+      ;;
+    *) echo "Unknown parameter: $1"; echo "Use -h or --help for usage information"; exit 1 ;;
   esac
   shift
 done
@@ -80,28 +92,19 @@ verbose "NAT table flushed"
 
 # Add iptables rules for transparent proxying
 echo "Setting up iptables rules for transparent proxying of port 443 to $PROXY_IP:$PROXY_PORT..."
+echo "Intercepting traffic from target IP: $TARGET_IP"
 
 # Set up IP masquerading for outgoing traffic
 echo "Setting up IP masquerading for outgoing traffic..."
 iptables -t nat -A POSTROUTING -o $PRIMARY_INTERFACE -j MASQUERADE
 verbose "Added POSTROUTING rule for IP masquerading"
 
-# Use DNAT to redirect only routed HTTPS traffic to the proxy (not local traffic)
-echo "Setting up DNAT for routed HTTPS traffic only..."
+# Use DNAT to redirect only traffic from the target IP to port 443
+echo "Setting up DNAT for traffic from $TARGET_IP to port 443..."
 
-# First, exclude local traffic
-echo "Excluding local IPs: 127.0.0.1 and $LOCAL_IP"
-iptables -t nat -A PREROUTING -p tcp --dport 443 -s 127.0.0.1 -j RETURN
-verbose "Added PREROUTING rule to exclude 127.0.0.1"
-
-iptables -t nat -A PREROUTING -p tcp --dport 443 -s $LOCAL_IP -j RETURN
-verbose "Added PREROUTING rule to exclude $LOCAL_IP"
-
-# Then redirect all other traffic
-iptables -t nat -A PREROUTING -p tcp --dport 443 -j DNAT --to-destination $PROXY_IP:$PROXY_PORT
-verbose "Added PREROUTING rule to redirect port 443 traffic to $PROXY_IP:$PROXY_PORT"
-
-# Note: We're not redirecting locally-generated HTTPS traffic as per requirements
+# Only intercept traffic from the specified target IP
+iptables -t nat -A PREROUTING -p tcp --dport 443 -s $TARGET_IP -j DNAT --to-destination $PROXY_IP:$PROXY_PORT
+verbose "Added PREROUTING rule to redirect port 443 traffic from $TARGET_IP to $PROXY_IP:$PROXY_PORT"
 
 # Add a rule to mark connections for routing
 echo "Setting up connection marking for proper routing..."
@@ -112,6 +115,11 @@ verbose "Added PREROUTING rule in mangle table for connection marking"
 echo "Ensuring proxy port is open..."
 iptables -A INPUT -p tcp --dport $PROXY_PORT -j ACCEPT
 verbose "Added INPUT rule to allow traffic to proxy port $PROXY_PORT"
+
+# Add specific rule to allow traffic from the target IP
+echo "Ensuring traffic from target IP is allowed..."
+iptables -A INPUT -p tcp -s $TARGET_IP -j ACCEPT
+verbose "Added INPUT rule to allow all TCP traffic from $TARGET_IP"
 
 # Display the current rules for verification
 if [ "$VERBOSE" -eq 1 ]; then

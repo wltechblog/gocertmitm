@@ -463,6 +463,18 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	// Get client IP
 	clientIP := getClientIP(r)
 
+	// Print immediate debug information about the connection
+	fmt.Printf("[DEBUG-HTTP-CONNECTION] New HTTP connection from %s to %s (Method: %s, URL: %s, Proto: %s)\n",
+		clientIP, r.Host, r.Method, r.URL, r.Proto)
+
+	// Log all request headers for debugging
+	fmt.Printf("[DEBUG-HTTP-HEADERS] Request headers from %s:\n", clientIP)
+	for name, values := range r.Header {
+		for _, value := range values {
+			fmt.Printf("[DEBUG-HTTP-HEADERS]   %s: %s\n", name, value)
+		}
+	}
+
 	// Extract the host and port
 	host := r.Host
 	var hostWithoutPort string
@@ -521,6 +533,18 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 	// Get client IP
 	clientIP := getClientIP(r)
+
+	// Print immediate debug information about the connection
+	fmt.Printf("[DEBUG-HTTPS-CONNECTION] New HTTPS connection from %s to %s (Method: %s, URL: %s, Proto: %s)\n",
+		clientIP, r.Host, r.Method, r.URL, r.Proto)
+
+	// Log all request headers for debugging
+	fmt.Printf("[DEBUG-HTTPS-HEADERS] Request headers from %s:\n", clientIP)
+	for name, values := range r.Header {
+		for _, value := range values {
+			fmt.Printf("[DEBUG-HTTPS-HEADERS]   %s: %s\n", name, value)
+		}
+	}
 
 	// Extract the host and port
 	host := r.Host
@@ -602,6 +626,18 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	// Get client IP
 	clientIP := getClientIP(r)
+
+	// Print immediate debug information about the CONNECT request
+	fmt.Printf("[DEBUG-CONNECT-REQUEST] New CONNECT request from %s to %s (Proto: %s)\n",
+		clientIP, r.Host, r.Proto)
+
+	// Log all request headers for debugging
+	fmt.Printf("[DEBUG-CONNECT-HEADERS] CONNECT request headers from %s:\n", clientIP)
+	for name, values := range r.Header {
+		for _, value := range values {
+			fmt.Printf("[DEBUG-CONNECT-HEADERS]   %s: %s\n", name, value)
+		}
+	}
 
 	// Extract the host and port
 	host := r.Host

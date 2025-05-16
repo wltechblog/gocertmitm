@@ -213,6 +213,18 @@ func (s *Server) handleDirectTunnel(w http.ResponseWriter, r *http.Request) {
 	// Get client IP
 	clientIP := getClientIP(r)
 
+	// Print immediate debug information about the direct tunnel request
+	fmt.Printf("[DEBUG-DIRECT-TUNNEL] New direct tunnel request from %s to %s\n",
+		clientIP, r.Host)
+
+	// Log all request headers for debugging
+	fmt.Printf("[DEBUG-DIRECT-TUNNEL-HEADERS] Request headers from %s:\n", clientIP)
+	for name, values := range r.Header {
+		for _, value := range values {
+			fmt.Printf("[DEBUG-DIRECT-TUNNEL-HEADERS]   %s: %s\n", name, value)
+		}
+	}
+
 	// Extract the host and port
 	host := r.Host
 	var hostWithoutPort string
@@ -349,15 +361,25 @@ func (s *Server) handleDirectTunnel(w http.ResponseWriter, r *http.Request) {
 	s.logger.DebugWithRequestIDf(reqID, "[TUNNEL] Connecting to host %s on port %s", targetHost, targetPort)
 
 	// Attempt to connect with an increased timeout
+	fmt.Printf("[DEBUG-DIRECT-TUNNEL] Attempting to connect to %s:%s (timeout: 30s)\n",
+		targetHost, targetPort)
+
 	targetConn, err := net.DialTimeout("tcp", net.JoinHostPort(targetHost, targetPort), 30*time.Second)
 	if err != nil {
 		s.logger.ErrorWithRequestIDf(reqID, "[ERROR] Failed to connect to target %s: %v", r.Host, err)
+		fmt.Printf("[DEBUG-DIRECT-TUNNEL] Connection failed to %s:%s: %v\n",
+			targetHost, targetPort, err)
+
 		// Send an error response to the client
 		errorMsg := fmt.Sprintf("HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nFailed to connect to target server: %v\r\n", err)
 		clientConn.Write([]byte(errorMsg))
 		clientConn.Close()
 		return
 	}
+
+	fmt.Printf("[DEBUG-DIRECT-TUNNEL] Successfully connected to %s:%s (local: %s, remote: %s)\n",
+		targetHost, targetPort, targetConn.LocalAddr(), targetConn.RemoteAddr())
+
 	s.logger.InfoWithRequestIDf(reqID, "[TUNNEL] Successfully established direct TCP connection to %s", r.Host)
 
 	// Respond to the client that the connection is established

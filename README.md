@@ -104,31 +104,35 @@ To use GoCertMITM as a man-in-the-middle proxy, you need to:
 For the Direct Tunnel mechanism to work correctly, the traffic redirection must be done on the same host where the proxy is running. We provide scripts to set up and tear down the necessary firewall rules:
 
 ```bash
-# Set up firewall rules (transparently redirects port 443 to localhost:9900)
-sudo ./scripts/setup_firewall.sh
+# Set up firewall rules to intercept traffic from a specific IP (default: 192.168.82.118)
+sudo ./scripts/setup_firewall.sh --target 192.168.82.118
+
+# For more options, use the help flag
+sudo ./scripts/setup_firewall.sh --help
 
 # Start the proxy on port 9900
 ./certmitm -listens :9900 -verbose
 
-# When done, tear down the firewall rules
-sudo ./scripts/teardown_firewall.sh
+# When done, tear down the firewall rules (use the same target IP if customized)
+sudo ./scripts/teardown_firewall.sh --target 192.168.82.118
 ```
 
 The setup script:
 - Enables IP forwarding
 - Saves the original iptables rules for restoration
-- Sets up DNAT (Destination NAT) to redirect only routed port 443 traffic to localhost:9900
-- Excludes locally-generated traffic from being proxied
+- Sets up DNAT (Destination NAT) to redirect port 443 traffic from a specific IP to localhost:9900
 - Configures IP masquerading for proper transparent proxying
-- Ensures all traffic flows normally except for routed port 443 traffic
+- Ensures all traffic flows normally except for port 443 traffic from the target IP
 - Adds connection marking for proper routing
+- Allows customization of the target IP, proxy port, and proxy IP
 
 The teardown script:
 - Restores the original iptables rules
 - Restores the original IP forwarding setting
 - Cleans up any temporary files created during setup
+- Accepts the same parameters as the setup script for consistency
 
-**Note**: These scripts require root privileges to modify system settings. The setup script automatically detects your primary network interface for proper configuration.
+**Note**: These scripts require root privileges to modify system settings. The target IP should be the IP address of the device whose traffic you want to intercept (e.g., the WAN side of an OpenWRT router). The setup script automatically detects your primary network interface for proper configuration.
 
 ### Installing the CA Certificate
 
