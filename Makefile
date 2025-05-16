@@ -13,7 +13,7 @@ BINARY_UNIX=$(BINARY_NAME)_unix
 all: test build
 
 build:
-	$(GOBUILD) -o $(BINARY_NAME) -v ./cmd/certmitm
+	$(GOBUILD) -race -o $(BINARY_NAME) -v ./cmd/certmitm
 
 test:
 	$(GOTEST) -v ./...

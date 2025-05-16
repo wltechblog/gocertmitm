@@ -61,7 +61,7 @@ func (m *Manager) findAnyRealCertificate() (string, string, string, error) {
 
 		// If we have a key and at least one certificate file, return this domain
 		if keyExists && (fullchainExists || certExists) {
-			m.logger.Infof("Found real certificate for domain: %s", domain)
+			m.logger.Debugf("Found real certificate for domain: %s", domain)
 			return domain, certPath, keyPath, nil
 		}
 	}
@@ -90,7 +90,7 @@ func (m *Manager) loadAnyRealCertificate() (*tls.Certificate, error) {
 		m.logger.Debugf("Using fullchain.pem for domain: %s", domain)
 		tlsCert, err := tls.LoadX509KeyPair(fullchainPath, keyPath)
 		if err == nil {
-			m.logger.Infof("Successfully loaded fullchain certificate for domain: %s", domain)
+			m.logger.Debugf("Successfully loaded fullchain certificate for domain: %s", domain)
 			return &tlsCert, nil
 		}
 		m.logger.Errorf("Failed to load fullchain certificate: %v", err)

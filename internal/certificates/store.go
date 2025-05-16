@@ -160,7 +160,7 @@ func (m *Manager) GetCertificate(domain string, testType TestType) (*tls.Certifi
 		m.logger.Debugf("No certificate found for %s, looking for any real certificate", domain)
 		tlsCert, err := m.loadAnyRealCertificate()
 		if err == nil {
-			m.logger.Infof("Using real certificate from another domain for %s", domain)
+			m.logger.Debugf("Using real certificate from another domain for %s", domain)
 			return tlsCert, nil
 		}
 		m.logger.Errorf("Failed to load any real certificate: %v", err)

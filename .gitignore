@@ -6,31 +6,60 @@
 *.dylib
 certmitm
 certmitm_unix
+bin/
+dist/
 
 # Test binary, built with `go test -c`
 *.test
 
-# Output of the go coverage tool, specifically when used with LiteIDE
+# Output of the go coverage tool
 *.out
+coverage.txt
 
-# Dependency directories (remove the comment below to include it)
-# vendor/
+# Dependency directories
+vendor/
+Godeps/
 
 # Go workspace file
 go.work
 
 # Generated certificates
 /certs/
+*.pem
+*.key
+*.crt
+*.cer
+*.der
+*.p12
+*.pfx
 
-# Logs
+# Testing data directories
+/payloads/
 /logs/
+/data/
 
 # IDE files
 .idea/
 .vscode/
 *.swp
 *.swo
+*~
+.project
+.classpath
+.settings/
+*.sublime-workspace
+*.sublime-project
 
 # OS specific files
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
+
+# Debug files
+debug
+debug.test
+__debug_bin

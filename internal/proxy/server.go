@@ -16,25 +16,39 @@ import (
 	"github.com/gocertmitm/internal/logging"
 )
 
+// DirectTunnelError is a special error type to indicate that a direct tunnel should be used
+type DirectTunnelError struct {
+	Domain string
+}
+
+// Error implements the error interface
+func (e *DirectTunnelError) Error() string {
+	return fmt.Sprintf("direct tunnel requested for %s", e.Domain)
+}
+
 // Server represents a proxy server
 type Server struct {
-	httpAddr         string
-	httpsAddr        string
-	certManager      *certificates.Manager
-	logger           *logging.Logger
-	payloadLogger    *logging.PayloadLogger
-	httpServer       *http.Server
-	httpsServer      *http.Server
-	testType         certificates.TestType
-	connections      map[string]int
-	connectionMu     sync.Mutex
-	savePayloads     bool
-	tester           *Tester
-	autoTest         bool                                      // Whether to automatically test all methods
-	failedHandshakes map[string]map[certificates.TestType]bool // Track failed handshakes
-	handshakesMu     sync.Mutex                                // Mutex for failedHandshakes
-	recentDomains    []string                                  // Track recently accessed domains
-	recentDomainsMu  sync.Mutex                                // Mutex for recentDomains
+	httpAddr            string
+	httpsAddr           string
+	certManager         *certificates.Manager
+	logger              *logging.Logger
+	payloadLogger       *logging.PayloadLogger
+	httpServer          *http.Server
+	httpsServer         *http.Server
+	testType            certificates.TestType
+	connections         map[string]int
+	connectionMu        sync.Mutex
+	savePayloads        bool
+	tester              *Tester
+	autoTest            bool                                      // Whether to automatically test all methods
+	failedHandshakes    map[string]map[certificates.TestType]bool // Track failed handshakes
+	handshakesMu        sync.Mutex                                // Mutex for failedHandshakes
+	directTunnelDomains map[string]bool                           // Domains that should use direct tunnel
+	directTunnelMu      sync.Mutex                                // Mutex for directTunnelDomains
+	clientDestinations  map[string]string                         // Map client IP to destination host:port
+	clientDestMu        sync.Mutex                                // Mutex for clientDestinations
+	recentDomains       []string                                  // Track recently accessed domains
+	recentDomainsMu     sync.Mutex                                // Mutex for recentDomains
 }
 
 // NewServer creates a new proxy server
@@ -55,18 +69,20 @@ func NewServer(httpAddr, httpsAddr string, certManager *certificates.Manager, lo
 	}
 
 	server := &Server{
-		httpAddr:         httpAddr,
-		httpsAddr:        httpsAddr,
-		certManager:      certManager,
-		logger:           logger,
-		payloadLogger:    payloadLogger,
-		testType:         certificates.SelfSigned, // Default test type
-		connections:      make(map[string]int),
-		savePayloads:     true, // Enable payload saving by default
-		tester:           tester,
-		autoTest:         true, // Enable automatic testing by default
-		failedHandshakes: make(map[string]map[certificates.TestType]bool),
-		recentDomains:    make([]string, 0, 10), // Track up to 10 recent domains
+		httpAddr:            httpAddr,
+		httpsAddr:           httpsAddr,
+		certManager:         certManager,
+		logger:              logger,
+		payloadLogger:       payloadLogger,
+		testType:            certificates.SelfSigned, // Default test type
+		connections:         make(map[string]int),
+		savePayloads:        true, // Enable payload saving by default
+		tester:              tester,
+		autoTest:            true, // Enable automatic testing by default
+		failedHandshakes:    make(map[string]map[certificates.TestType]bool),
+		directTunnelDomains: make(map[string]bool),
+		clientDestinations:  make(map[string]string), // Track client IP to destination mapping
+		recentDomains:       make([]string, 0, 10),   // Track up to 10 recent domains
 	}
 
 	// Create HTTP server
@@ -276,11 +292,18 @@ func (s *Server) getAutoTestCertificateFunc() func(*tls.ClientHelloInfo) (*tls.C
 			s.logger.DebugWithRequestIDf(reqID, "[TEST] Initial test type for domain %s: %s", serverName, testType.GetTestTypeName())
 		}
 
-		// If we should use a direct tunnel, return nil to indicate failure
-		// This will cause the TLS handshake to fail, and the client will fall back to direct connection
+		// If we should use a direct tunnel, we need to handle this specially
+		// We'll return a special error that our TLS config will recognize
 		if testType == certificates.DirectTunnel {
 			s.logger.InfoWithRequestIDf(reqID, "[TUNNEL] Using direct tunnel for %s - all tests failed", serverName)
-			return nil, fmt.Errorf("all tests failed for %s, using direct tunnel", serverName)
+			// Store this domain in a special map to indicate it should use direct tunnel
+			s.directTunnelMu.Lock()
+			s.directTunnelDomains[serverName] = true
+			if destIP != "" {
+				s.directTunnelDomains[destIP] = true
+			}
+			s.directTunnelMu.Unlock()
+			return nil, &DirectTunnelError{Domain: serverName}
 		}
 
 		// Check if this test has already failed for this connection
@@ -314,7 +337,11 @@ func (s *Server) getAutoTestCertificateFunc() func(*tls.ClientHelloInfo) (*tls.C
 
 			if nextTest == certificates.DirectTunnel {
 				s.logger.InfoWithRequestIDf(reqID, "[TUNNEL] Using direct tunnel for %s - all tests failed", serverName)
-				return nil, fmt.Errorf("all tests failed for %s, using direct tunnel", serverName)
+				// Store this domain in the direct tunnel map
+				s.directTunnelMu.Lock()
+				s.directTunnelDomains[serverName] = true
+				s.directTunnelMu.Unlock()
+				return nil, &DirectTunnelError{Domain: serverName}
 			}
 
 			// Try the next test
@@ -340,7 +367,11 @@ func (s *Server) getAutoTestCertificateFunc() func(*tls.ClientHelloInfo) (*tls.C
 			nextTest := s.tester.RecordTestResult(serverName, testType, false)
 			if nextTest == certificates.DirectTunnel {
 				s.logger.InfoWithRequestIDf(reqID, "[TUNNEL] Using direct tunnel for %s - all tests failed", serverName)
-				return nil, fmt.Errorf("all tests failed for %s, using direct tunnel", serverName)
+				// Store this domain in the direct tunnel map
+				s.directTunnelMu.Lock()
+				s.directTunnelDomains[serverName] = true
+				s.directTunnelMu.Unlock()
+				return nil, &DirectTunnelError{Domain: serverName}
 			}
 
 			// Try the next test by calling this function again with the same clientHello
@@ -612,27 +643,111 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Get a request ID for this connection
 	reqID := s.logger.GetRequestID(clientIP, hostWithoutPort)
 
+	// Store the destination information for this client IP
+	// This will help us identify the destination for non-TLS connections
+	s.clientDestMu.Lock()
+	s.clientDestinations[clientIP] = r.Host
+	s.logger.DebugWithRequestIDf(reqID, "[DEST] Stored destination %s for client %s", r.Host, clientIP)
+	s.clientDestMu.Unlock()
+
 	// Check if we should use a direct tunnel based on IP or domain
 	useTunnel := false
-	if s.autoTest {
-		if destIP != "" {
-			// Use IP-based lookup first
-			useTunnel = s.tester.ShouldUseTunnelByIP(destIP)
-			s.logger.DebugWithRequestIDf(reqID, "Checking tunnel status for IP %s: %v", destIP, useTunnel)
+	isMQTT := false
+
+	// Check if this is an MQTT connection based on the URL format or hostname
+	// MQTT over SSL URLs often start with "ssl://" or "mqtts://"
+	// Also check for common MQTT hostnames
+	if strings.HasPrefix(strings.ToLower(hostWithoutPort), "ssl://") ||
+		strings.HasPrefix(strings.ToLower(hostWithoutPort), "mqtts://") ||
+		strings.Contains(strings.ToLower(hostWithoutPort), "mqtt") {
+		// Mark as MQTT but don't automatically use direct tunnel
+		// We'll try to MITM it first, and fall back to direct tunnel if that fails
+		isMQTT = true
+		s.logger.InfoWithRequestIDf(reqID, "[MQTT] Detected MQTT connection to %s - will attempt MITM", hostWithoutPort)
+
+		// Add a special log entry to make it very clear we're dealing with an MQTT connection
+		s.logger.InfoWithRequestIDf(reqID, "[MQTT-ALERT] *** MQTT CONNECTION DETECTED: %s - MQTT connections are persistent and may not show obvious failures ***", hostWithoutPort)
+	}
+
+	// First, check if this domain or IP is in the directTunnelDomains map
+	if !useTunnel {
+		s.directTunnelMu.Lock()
+		if s.directTunnelDomains[hostWithoutPort] || (destIP != "" && s.directTunnelDomains[destIP]) {
+			useTunnel = true
+			s.logger.InfoWithRequestIDf(reqID, "[TUNNEL] Domain %s or IP %s is in directTunnelDomains map", hostWithoutPort, destIP)
+		}
+		s.directTunnelMu.Unlock()
+	}
+
+	// If not already marked for direct tunnel, check the tester
+	if !useTunnel && s.autoTest {
+		// Check the domain status first to see if all tests have been completed
+		domainStatus := s.tester.GetTestStatus(hostWithoutPort)
+		if domainStatus != nil {
+			s.logger.InfoWithRequestIDf(reqID, "[DOMAIN] Domain %s status: CurrentTestIndex=%d, TestsCompleted=%v, SuccessfulTestSet=%v",
+				hostWithoutPort, domainStatus.CurrentTestIndex, domainStatus.TestsCompleted, domainStatus.SuccessfulTestSet)
+
+			// If all tests are completed and none succeeded, use direct tunnel
+			if domainStatus.TestsCompleted && !domainStatus.SuccessfulTestSet {
+				useTunnel = true
+				s.logger.InfoWithRequestIDf(reqID, "[TUNNEL] Domain %s has completed all tests with no success, using direct tunnel", hostWithoutPort)
+
+				// Add to the directTunnelDomains map
+				s.directTunnelMu.Lock()
+				s.directTunnelDomains[hostWithoutPort] = true
+				if destIP != "" {
+					s.directTunnelDomains[destIP] = true
+				}
+				s.directTunnelMu.Unlock()
+			}
 		}
 
-		// If we couldn't determine by IP or it's not a tunnel, check by domain
-		if destIP == "" || !useTunnel {
-			domainTunnel := s.tester.ShouldUseTunnel(hostWithoutPort)
-			if domainTunnel {
-				useTunnel = true
+		// If we're not already using a tunnel, check by IP and domain
+		if !useTunnel {
+			if destIP != "" {
+				// Use IP-based lookup first
+				useTunnel = s.tester.ShouldUseTunnelByIP(destIP)
+				s.logger.InfoWithRequestIDf(reqID, "[TUNNEL] Checking tunnel status for IP %s: %v", destIP, useTunnel)
 			}
-			s.logger.DebugWithRequestIDf(reqID, "Checking tunnel status for domain %s: %v", hostWithoutPort, domainTunnel)
+
+			// If we couldn't determine by IP or it's not a tunnel, check by domain
+			if destIP == "" || !useTunnel {
+				domainTunnel := s.tester.ShouldUseTunnel(hostWithoutPort)
+				if domainTunnel {
+					useTunnel = true
+				}
+				s.logger.InfoWithRequestIDf(reqID, "[TUNNEL] Checking tunnel status for domain %s: %v", hostWithoutPort, domainTunnel)
+			}
+
+			// If we should use a tunnel, add to the directTunnelDomains map for future connections
+			if useTunnel {
+				s.directTunnelMu.Lock()
+				s.directTunnelDomains[hostWithoutPort] = true
+				if destIP != "" {
+					s.directTunnelDomains[destIP] = true
+				}
+				s.directTunnelMu.Unlock()
+			}
+		}
+
+		// Log the final decision
+		if useTunnel {
+			if isMQTT {
+				s.logger.InfoWithRequestIDf(reqID, "[MQTT] Will use direct tunnel for MQTT connection to %s (IP: %s)", hostWithoutPort, destIP)
+			} else {
+				s.logger.InfoWithRequestIDf(reqID, "[TUNNEL] Will use direct tunnel for %s (IP: %s)", hostWithoutPort, destIP)
+			}
+		} else {
+			s.logger.InfoWithRequestIDf(reqID, "[TUNNEL] Will attempt MITM for %s (IP: %s)", hostWithoutPort, destIP)
 		}
 	}
 
 	if useTunnel {
-		s.logger.InfoWithRequestIDf(reqID, "CONNECT request for %s from %s - using direct tunnel (all tests failed)", r.Host, clientIP)
+		if isMQTT {
+			s.logger.InfoWithRequestIDf(reqID, "CONNECT request for %s from %s - using direct tunnel for MQTT connection", r.Host, clientIP)
+		} else {
+			s.logger.InfoWithRequestIDf(reqID, "CONNECT request for %s from %s - using direct tunnel (all tests failed)", r.Host, clientIP)
+		}
 		s.handleDirectTunnel(w, r)
 		return
 	}
@@ -642,7 +757,12 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if s.autoTest {
 		testType = s.tester.GetNextTest(host)
 	}
-	s.logger.InfoWithRequestIDf(reqID, "[CONNECT] Request for %s from %s (Test: %s)", r.Host, clientIP, testType.GetTestTypeName())
+
+	if isMQTT {
+		s.logger.InfoWithRequestIDf(reqID, "[MQTT] CONNECT request for %s from %s (Test: %s)", r.Host, clientIP, testType.GetTestTypeName())
+	} else {
+		s.logger.InfoWithRequestIDf(reqID, "[CONNECT] Request for %s from %s (Test: %s)", r.Host, clientIP, testType.GetTestTypeName())
+	}
 
 	// Hijack the connection
 	hijacker, ok := w.(http.Hijacker)
@@ -659,6 +779,52 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Try to get the original destination using SO_ORIGINAL_DST
+	// This is useful for transparent proxy mode
+	var originalDest *OriginalDestination
+	if tcpConn, ok := clientConn.(*net.TCPConn); ok {
+		var err error
+		originalDest, err = GetOriginalDst(tcpConn)
+		if err == nil {
+			// Log both the hostname from the request and the original destination IP
+			s.logger.InfoWithRequestIDf(reqID, "[ORIGINAL-DST] Original destination for client %s: %s (Host header: %s)",
+				clientIP, originalDest.HostPort, r.Host)
+
+			// Always use the original destination IP:port from SO_ORIGINAL_DST
+			// This ensures we're connecting to the correct destination regardless of DNS
+			if originalDest.HostPort != r.Host {
+				s.logger.InfoWithRequestIDf(reqID, "[ORIGINAL-DST] Using original destination %s instead of Host header %s",
+					originalDest.HostPort, r.Host)
+
+				// Store the original hostname for logging purposes
+				originalHostname := r.Host
+
+				// Update the request host to use the original destination IP:port
+				r.Host = originalDest.HostPort
+
+				// Extract IP without port for domain tracking
+				hostWithoutPort := originalDest.IPString
+
+				// Add to recent domains list
+				s.AddRecentDomain(hostWithoutPort)
+
+				// Update the request ID with the new host but include the original hostname in logs
+				reqID = s.logger.GetRequestID(clientIP, hostWithoutPort)
+				s.logger.InfoWithRequestIDf(reqID, "[ORIGINAL-DST] Request for hostname %s directed to IP %s",
+					originalHostname, originalDest.IPString)
+			}
+		} else {
+			s.logger.DebugWithRequestIDf(reqID, "[ORIGINAL-DST] Failed to get original destination: %v", err)
+		}
+	}
+
+	// Store the destination information for this client IP
+	// This will help us identify the destination for non-TLS connections
+	s.clientDestMu.Lock()
+	s.clientDestinations[clientIP] = r.Host
+	s.logger.DebugWithRequestIDf(reqID, "[DEST] Stored destination %s for client %s", r.Host, clientIP)
+	s.clientDestMu.Unlock()
+
 	// Set a deadline for the client connection
 	if err := clientConn.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
 		s.logger.Errorf("Failed to set deadline for client connection: %v", err)
@@ -670,10 +836,18 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Variable to hold the connection to the target server
 	var targetConn net.Conn
 
-	// For HTTPS connections, we need to use TLS with InsecureSkipVerify
-	// to accept any certificate presented by the server
-	if strings.HasSuffix(r.Host, ":443") || strings.Contains(r.Host, ":443/") {
-		s.logger.Debugf("Using TLS connection with InsecureSkipVerify for %s", r.Host)
+	// Check if this is an MQTT connection based on the URL format or hostname
+	isMQTTConn := strings.HasPrefix(strings.ToLower(r.Host), "ssl://") ||
+		strings.HasPrefix(strings.ToLower(r.Host), "mqtts://") ||
+		strings.Contains(strings.ToLower(r.Host), "mqtt")
+
+	// For HTTPS connections or MQTT over SSL, we need to use TLS with InsecureSkipVerify
+	if strings.HasSuffix(r.Host, ":443") || strings.Contains(r.Host, ":443/") || isMQTTConn {
+		if isMQTTConn {
+			s.logger.Debugf("Using TLS connection with InsecureSkipVerify for MQTT over SSL: %s", r.Host)
+		} else {
+			s.logger.Debugf("Using TLS connection with InsecureSkipVerify for HTTPS: %s", r.Host)
+		}
 
 		// First establish a TCP connection
 		tcpConn, err := net.DialTimeout("tcp", r.Host, 10*time.Second)
@@ -696,15 +870,109 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 		tlsConn := tls.Client(tcpConn, tlsConfig)
 		if err := tlsConn.Handshake(); err != nil {
-			s.logger.Errorf("TLS handshake failed with %s: %v", r.Host, err)
-			tcpConn.Close()
-			clientConn.Close()
-			return
+			if isMQTTConn {
+				s.logger.InfoWithRequestIDf(reqID, "[MQTT] TLS handshake failed for MQTT connection to %s: %v - recording as test failure", r.Host, err)
+
+				// Get the current test type for this domain
+				testType := s.tester.GetNextTest(hostWithoutPort)
+
+				// Record the handshake failure
+				s.logger.InfoWithRequestIDf(reqID, "[TLS] Handshake error from %s for %s with test type %s",
+					clientIP, hostWithoutPort, testType.GetTestTypeName())
+
+				// Record the failure and get the next test type
+				nextTest := s.RecordFailedHandshake(hostWithoutPort, testType, reqID)
+
+				s.logger.InfoWithRequestIDf(reqID, "[NEXT] Moving to next test for %s: %s", hostWithoutPort, nextTest.GetTestTypeName())
+
+				// If we've tried all tests, use direct tunnel
+				if nextTest == certificates.DirectTunnel {
+					s.logger.InfoWithRequestIDf(reqID, "[MQTT] All tests failed for MQTT connection to %s - falling back to direct tunnel", r.Host)
+
+					// For MQTT connections, if all tests fail, fall back to direct tunnel
+					// Close the TLS connection
+					tcpConn.Close()
+
+					// Add this domain to the direct tunnel map for future connections
+					s.directTunnelMu.Lock()
+					s.directTunnelDomains[hostWithoutPort] = true
+					if destIP != "" {
+						s.directTunnelDomains[destIP] = true
+					}
+					s.directTunnelMu.Unlock()
+
+					// Use direct tunnel for this connection
+					s.handleDirectTunnel(w, r)
+					return
+				} else {
+					// Try again with the next test type
+					s.logger.InfoWithRequestIDf(reqID, "[MQTT] Trying next test type %s for %s", nextTest.GetTestTypeName(), hostWithoutPort)
+					tcpConn.Close()
+					clientConn.Close()
+					return
+				}
+			} else {
+				s.logger.Errorf("TLS handshake failed with %s: %v", r.Host, err)
+				tcpConn.Close()
+				clientConn.Close()
+				return
+			}
+		}
+
+		// For MQTT connections, we need special handling
+		if isMQTTConn {
+			s.logger.InfoWithRequestIDf(reqID, "[MQTT] TLS handshake succeeded for MQTT connection to %s - connection established", r.Host)
+			s.logger.InfoWithRequestIDf(reqID, "[MQTT-ALERT] *** MQTT CONNECTION ESTABLISHED: %s - Will force test failure in 5 seconds ***", hostWithoutPort)
+
+			// Capture variables for the goroutine to avoid race conditions
+			domainForGoroutine := hostWithoutPort
+			reqIDForGoroutine := reqID
+
+			// Start a goroutine to force a test failure after a short delay
+			// This is because MQTT connections are persistent and may not fail naturally
+			go func(domain, reqID string) {
+				// Log that we're starting the goroutine
+				s.logger.InfoWithRequestIDf(reqID, "[MQTT-GOROUTINE] Starting goroutine to handle MQTT connection to %s", domain)
+
+				// Wait a short time to let the connection establish fully
+				time.Sleep(5 * time.Second)
+
+				// Log that we're waking up after the sleep
+				s.logger.InfoWithRequestIDf(reqID, "[MQTT-GOROUTINE] Waking up after 5 second sleep for %s", domain)
+
+				// Get the current test type for this domain
+				testType := s.tester.GetNextTest(domain)
+
+				// Log the current test type
+				s.logger.InfoWithRequestIDf(reqID, "[MQTT-GOROUTINE] Current test type for %s: %s", domain, testType.GetTestTypeName())
+
+				// If we're not already using direct tunnel, record this as a failure to move to the next test
+				if testType != certificates.DirectTunnel {
+					s.logger.InfoWithRequestIDf(reqID, "[MQTT-GOROUTINE] MQTT connection to %s has been established for 5 seconds - recording as test failure to move to next test", domain)
+
+					// Record the failure and get the next test type
+					nextTest := s.tester.RecordTestResult(domain, testType, false)
+
+					s.logger.InfoWithRequestIDf(reqID, "[MQTT-GOROUTINE] Moving to next test for %s: %s", domain, nextTest.GetTestTypeName())
+
+					// Log the domain status after recording the failure
+					domainStatus := s.tester.GetTestStatus(domain)
+					if domainStatus != nil {
+						s.logger.InfoWithRequestIDf(reqID, "[MQTT-GOROUTINE] After failure - Domain %s status: CurrentTestIndex=%d, TestsCompleted=%v, SuccessfulTestSet=%v",
+							domain, domainStatus.CurrentTestIndex, domainStatus.TestsCompleted, domainStatus.SuccessfulTestSet)
+					}
+				} else {
+					s.logger.InfoWithRequestIDf(reqID, "[MQTT-GOROUTINE] Domain %s is already using direct tunnel, not recording failure", domain)
+				}
+			}(domainForGoroutine, reqIDForGoroutine)
 		}
 
 		targetConn = tlsConn
 	} else {
 		// For non-HTTPS connections, use regular TCP
+		// Note: We now handle MQTT connections with TLS above, so this is only for non-TLS connections
+		s.logger.Debugf("Using direct TCP connection for non-HTTPS: %s", r.Host)
+
 		targetConn, err = net.DialTimeout("tcp", r.Host, 10*time.Second)
 		if err != nil {
 			s.logger.Errorf("Failed to connect to target %s: %v", r.Host, err)
@@ -730,18 +998,28 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	// Start proxying data between client and target
 	s.logger.Debugf("Starting to proxy data between client %s and target %s", clientIP, r.Host)
+
+	// Extract domain without port for logging and test tracking
+	hostWithoutPort = r.Host
+	if host, _, err := net.SplitHostPort(r.Host); err == nil {
+		hostWithoutPort = host
+	}
+
+	// Get a request ID for this connection
+	reqID = s.logger.GetRequestID(clientIP, hostWithoutPort)
+
 	go func() {
 		defer clientConn.Close()
 		defer targetConn.Close()
-		copyData(targetConn, clientConn)
-		s.logger.Debugf("Finished proxying data from target %s to client %s", r.Host, clientIP)
+		copyData(targetConn, clientConn, reqID, hostWithoutPort, s)
+		s.logger.DebugWithRequestIDf(reqID, "Finished proxying data from target %s to client %s", r.Host, clientIP)
 	}()
 
 	go func() {
 		defer clientConn.Close()
 		defer targetConn.Close()
-		copyData(clientConn, targetConn)
-		s.logger.Debugf("Finished proxying data from client %s to target %s", clientIP, r.Host)
+		copyData(clientConn, targetConn, reqID, hostWithoutPort, s)
+		s.logger.DebugWithRequestIDf(reqID, "Finished proxying data from client %s to target %s", clientIP, r.Host)
 	}()
 }
 
@@ -769,7 +1047,10 @@ func (s *Server) handleRegularHTTP(w http.ResponseWriter, r *http.Request) {
 			reqCopy.Body = io.NopCloser(bytes.NewReader(requestBodyCopy))
 		}
 
-		if err := s.payloadLogger.LogRequest(clientIP, host, &reqCopy); err != nil {
+		// Get a request ID for this connection
+		reqID := s.logger.GetRequestID(clientIP, host)
+
+		if err := s.payloadLogger.LogRequest(clientIP, host, &reqCopy, reqID); err != nil {
 			s.logger.Errorf("Failed to log request payload: %v", err)
 		}
 	}
@@ -861,7 +1142,10 @@ func (s *Server) handleRegularHTTP(w http.ResponseWriter, r *http.Request) {
 		respCopy := *targetResp
 		respCopy.Body = io.NopCloser(bytes.NewReader(responseBody))
 
-		if err := s.payloadLogger.LogResponse(clientIP, host, &respCopy); err != nil {
+		// Get a request ID for this connection
+		reqID := s.logger.GetRequestID(clientIP, host)
+
+		if err := s.payloadLogger.LogResponse(clientIP, host, &respCopy, reqID); err != nil {
 			s.logger.Errorf("Failed to log response payload: %v", err)
 		}
 	}
@@ -936,6 +1220,14 @@ func (s *Server) trackConnection(clientIP string, isConnect bool) {
 		s.connections[clientIP]--
 		if s.connections[clientIP] <= 0 {
 			delete(s.connections, clientIP)
+
+			// Also clean up the client destination mapping when the last connection is closed
+			s.clientDestMu.Lock()
+			if _, exists := s.clientDestinations[clientIP]; exists {
+				s.logger.Debugf("[DEST] Removing destination mapping for client %s", clientIP)
+				delete(s.clientDestinations, clientIP)
+			}
+			s.clientDestMu.Unlock()
 		}
 	}
 }

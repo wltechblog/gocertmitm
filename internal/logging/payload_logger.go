@@ -30,7 +30,7 @@ func NewPayloadLogger(baseDir string) (*PayloadLogger, error) {
 }
 
 // LogRequest logs an HTTP request payload
-func (p *PayloadLogger) LogRequest(clientIP, host string, req *http.Request) error {
+func (p *PayloadLogger) LogRequest(clientIP, host string, req *http.Request, reqID ...string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -43,8 +43,16 @@ func (p *PayloadLogger) LogRequest(clientIP, host string, req *http.Request) err
 	// Create timestamp for filename
 	timestamp := time.Now().Format("20060102_150405.000")
 
+	// Use request ID in filename if provided
+	var filenamePrefix string
+	if len(reqID) > 0 && reqID[0] != "" {
+		filenamePrefix = fmt.Sprintf("req_%s_%s", timestamp, reqID[0])
+	} else {
+		filenamePrefix = fmt.Sprintf("req_%s_%s", timestamp, clientIP)
+	}
+
 	// Create request metadata file
-	metadataPath := filepath.Join(domainDir, fmt.Sprintf("req_%s_%s.meta", timestamp, clientIP))
+	metadataPath := filepath.Join(domainDir, filenamePrefix+".meta")
 	metadataFile, err := os.Create(metadataPath)
 	if err != nil {
 		return fmt.Errorf("failed to create request metadata file: %v", err)
@@ -54,6 +62,9 @@ func (p *PayloadLogger) LogRequest(clientIP, host string, req *http.Request) err
 	// Write request metadata
 	fmt.Fprintf(metadataFile, "Time: %s\n", time.Now().Format(time.RFC3339))
 	fmt.Fprintf(metadataFile, "Client IP: %s\n", clientIP)
+	if len(reqID) > 0 && reqID[0] != "" {
+		fmt.Fprintf(metadataFile, "Request ID: %s\n", reqID[0])
+	}
 	fmt.Fprintf(metadataFile, "Method: %s\n", req.Method)
 	fmt.Fprintf(metadataFile, "Host: %s\n", host)
 	fmt.Fprintf(metadataFile, "Path: %s\n", req.URL.Path)
@@ -77,7 +88,7 @@ func (p *PayloadLogger) LogRequest(clientIP, host string, req *http.Request) err
 		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 
 		// Create body file
-		bodyPath := filepath.Join(domainDir, fmt.Sprintf("req_%s_%s.body", timestamp, clientIP))
+		bodyPath := filepath.Join(domainDir, filenamePrefix+".body")
 		bodyFile, err := os.Create(bodyPath)
 		if err != nil {
 			return fmt.Errorf("failed to create request body file: %v", err)
@@ -100,7 +111,7 @@ func (p *PayloadLogger) LogRequest(clientIP, host string, req *http.Request) err
 }
 
 // LogResponse logs an HTTP response payload
-func (p *PayloadLogger) LogResponse(clientIP, host string, resp *http.Response) error {
+func (p *PayloadLogger) LogResponse(clientIP, host string, resp *http.Response, reqID ...string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -113,8 +124,16 @@ func (p *PayloadLogger) LogResponse(clientIP, host string, resp *http.Response) 
 	// Create timestamp for filename
 	timestamp := time.Now().Format("20060102_150405.000")
 
+	// Use request ID in filename if provided
+	var filenamePrefix string
+	if len(reqID) > 0 && reqID[0] != "" {
+		filenamePrefix = fmt.Sprintf("resp_%s_%s", timestamp, reqID[0])
+	} else {
+		filenamePrefix = fmt.Sprintf("resp_%s_%s", timestamp, clientIP)
+	}
+
 	// Create response metadata file
-	metadataPath := filepath.Join(domainDir, fmt.Sprintf("resp_%s_%s.meta", timestamp, clientIP))
+	metadataPath := filepath.Join(domainDir, filenamePrefix+".meta")
 	metadataFile, err := os.Create(metadataPath)
 	if err != nil {
 		return fmt.Errorf("failed to create response metadata file: %v", err)
@@ -124,6 +143,9 @@ func (p *PayloadLogger) LogResponse(clientIP, host string, resp *http.Response) 
 	// Write response metadata
 	fmt.Fprintf(metadataFile, "Time: %s\n", time.Now().Format(time.RFC3339))
 	fmt.Fprintf(metadataFile, "Client IP: %s\n", clientIP)
+	if len(reqID) > 0 && reqID[0] != "" {
+		fmt.Fprintf(metadataFile, "Request ID: %s\n", reqID[0])
+	}
 	fmt.Fprintf(metadataFile, "Status: %s\n", resp.Status)
 	fmt.Fprintf(metadataFile, "Protocol: %s\n", resp.Proto)
 	fmt.Fprintf(metadataFile, "Headers:\n")
@@ -145,7 +167,7 @@ func (p *PayloadLogger) LogResponse(clientIP, host string, resp *http.Response) 
 		resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 
 		// Create body file
-		bodyPath := filepath.Join(domainDir, fmt.Sprintf("resp_%s_%s.body", timestamp, clientIP))
+		bodyPath := filepath.Join(domainDir, filenamePrefix+".body")
 		bodyFile, err := os.Create(bodyPath)
 		if err != nil {
 			return fmt.Errorf("failed to create response body file: %v", err)

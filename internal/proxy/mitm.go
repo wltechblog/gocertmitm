@@ -1,45 +1,115 @@
 package proxy
 
 import (
+	"io"
 	"net"
 	"sync"
 	"time"
+
+	"github.com/gocertmitm/internal/certificates"
 )
 
-// copyData copies data between two connections
-// This is a simpler version of the data copying logic used in handleDirectTunnel
+// copyData copies data between two connections with an inactivity timeout
 // It's used for regular MITM connections
-func copyData(dst, src net.Conn) {
+func copyData(dst, src net.Conn, reqID string, domain string, server *Server) {
 	defer dst.Close()
 	defer src.Close()
 
 	// Use a larger buffer for better performance
 	buf := make([]byte, 64*1024)
-	bytesTransferred := int64(0)
 
+	// Create a channel to signal activity
+	activity := make(chan struct{}, 1)
+
+	// Create a channel to signal when the connection should be closed due to inactivity
+	closeConn := make(chan struct{}, 1)
+
+	// Start a goroutine to monitor for inactivity
+	go func() {
+		inactivityTimeout := 10 * time.Second
+		timer := time.NewTimer(inactivityTimeout)
+		defer timer.Stop()
+
+		for {
+			select {
+			case <-activity:
+				// Reset the timer when there's activity
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(inactivityTimeout)
+			case <-timer.C:
+				// Timeout occurred - close the connection and record as a test failure
+				if server != nil && domain != "" && reqID != "" {
+					// Get the current test type for this domain
+					testType := server.tester.GetNextTest(domain)
+
+					// Record the timeout as a test failure if we're not already in direct tunnel mode
+					if testType != certificates.DirectTunnel {
+						server.logger.InfoWithRequestIDf(reqID, "[TIMEOUT] No activity for %s on MITM connection for %s - closing connection",
+							inactivityTimeout, domain)
+						server.logger.InfoWithRequestIDf(reqID, "[TIMEOUT] Recording timeout as a test failure for %s with test type %s",
+							domain, testType.GetTestTypeName())
+
+						// Record the failure and get the next test type
+						nextTest := server.tester.RecordTestResult(domain, testType, false)
+
+						server.logger.InfoWithRequestIDf(reqID, "[NEXT] Moving to next test for %s due to timeout: %s",
+							domain, nextTest.GetTestTypeName())
+					}
+				}
+
+				closeConn <- struct{}{}
+				return
+			}
+		}
+	}()
+
+	// Copy loop with activity signaling and timeout checking
 	for {
-		// Set read timeout
-		src.SetReadDeadline(time.Now().Add(30 * time.Second))
+		// Check if we should close due to inactivity
+		select {
+		case <-closeConn:
+			return
+		default:
+			// Continue with normal operation
+		}
+
+		// Set a read deadline to ensure we can check for the close signal periodically
+		src.SetReadDeadline(time.Now().Add(1 * time.Second))
 
 		// Read from source
 		n, err := src.Read(buf)
 		if n > 0 {
-			bytesTransferred += int64(n)
-
-			// Set write timeout
-			dst.SetWriteDeadline(time.Now().Add(30 * time.Second))
+			// Signal activity
+			select {
+			case activity <- struct{}{}:
+			default:
+				// Channel buffer is full, which is fine
+			}
 
 			// Write to destination
 			_, writeErr := dst.Write(buf[:n])
 			if writeErr != nil {
 				// Write error
-				break
+				return
 			}
 		}
 
 		if err != nil {
-			// Read error (EOF is normal)
-			break
+			if err == io.EOF {
+				// Normal end of connection
+				return
+			} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				// This is just our read deadline - continue the loop
+				continue
+			} else {
+				// Other read error
+				return
+			}
 		}
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -18,6 +19,7 @@ type Logger struct {
 	logFile     *os.File
 	nextReqID   uint64
 	reqIDMap    map[string]string // Maps clientIP:host to request ID
+	mu          sync.Mutex        // Mutex to protect concurrent access to reqIDMap and nextReqID
 }
 
 // NewLogger creates a new logger
@@ -132,14 +134,12 @@ func (l *Logger) LogCertificateTest(clientIP, host string, testType string, acce
 }
 
 // GetRequestID returns a request ID for a client IP and host
-// If one doesn't exist, it creates a new one
+// Always generates a new unique request ID for each call
 func (l *Logger) GetRequestID(clientIP, host string) string {
-	key := clientIP + ":" + host
+	l.mu.Lock()
+	defer l.mu.Unlock()
 
-	// Check if we already have a request ID for this client IP and host
-	if reqID, ok := l.reqIDMap[key]; ok {
-		return reqID
-	}
+	key := clientIP + ":" + host
 
 	// Generate a new request ID
 	reqID := fmt.Sprintf("REQ-%04X", l.nextReqID)
@@ -153,6 +153,9 @@ func (l *Logger) GetRequestID(clientIP, host string) string {
 
 // ClearRequestID removes a request ID for a client IP and host
 func (l *Logger) ClearRequestID(clientIP, host string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
 	key := clientIP + ":" + host
 	delete(l.reqIDMap, key)
 }

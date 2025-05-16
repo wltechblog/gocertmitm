@@ -25,6 +25,7 @@ type DomainTestStatus struct {
 	TestsCompleted    bool
 	SuccessfulTest    certificates.TestType
 	SuccessfulTestSet bool
+	AttemptCount      map[certificates.TestType]int // Number of attempts for each test type
 }
 
 // domainTestStatusJSON is used for JSON serialization
@@ -38,6 +39,7 @@ type domainTestStatusJSON struct {
 	TestsCompleted    bool            `json:"tests_completed"`
 	SuccessfulTest    string          `json:"successful_test,omitempty"`
 	SuccessfulTestSet bool            `json:"successful_test_set"`
+	AttemptCount      map[string]int  `json:"attempt_count,omitempty"`
 }
 
 // testerJSON is used for JSON serialization
@@ -49,6 +51,7 @@ type testerJSON struct {
 type Tester struct {
 	domains      map[string]*DomainTestStatus // Domain name -> status
 	ipToDomain   map[string]string            // IP address -> domain name mapping
+	domainToIPs  map[string][]string          // Domain name -> list of IP addresses
 	mu           sync.RWMutex
 	logger       *logging.Logger
 	testOrder    []certificates.TestType
@@ -92,6 +95,7 @@ func NewTesterWithRetryPeriod(logger *logging.Logger, initialTestType certificat
 	tester := &Tester{
 		domains:      make(map[string]*DomainTestStatus),
 		ipToDomain:   make(map[string]string),
+		domainToIPs:  make(map[string][]string),
 		logger:       logger,
 		testOrder:    testOrder,
 		retestPeriod: retryPeriod,
@@ -141,6 +145,9 @@ func (t *Tester) GetNextTest(domain string) certificates.TestType {
 				// Map the IP to the domain
 				t.ipToDomain[ip] = domain
 
+				// Add the IP to the domain's IP list
+				t.domainToIPs[domain] = append(t.domainToIPs[domain], ip)
+
 				// Try to get all IPs for this domain
 				ips, err = t.resolveDomainToAllIPs(domain)
 				if err != nil {
@@ -149,7 +156,14 @@ func (t *Tester) GetNextTest(domain string) certificates.TestType {
 					// Map all IPs to this domain
 					for _, ipAddr := range ips {
 						t.ipToDomain[ipAddr] = domain
+
+						// Make sure we don't add duplicates to the domain's IP list
+						if !contains(t.domainToIPs[domain], ipAddr) {
+							t.domainToIPs[domain] = append(t.domainToIPs[domain], ipAddr)
+						}
 					}
+
+					t.logger.Debugf("[DOMAIN] Domain %s has %d IP addresses: %v", domain, len(t.domainToIPs[domain]), t.domainToIPs[domain])
 				}
 			}
 		} else {
@@ -158,17 +172,31 @@ func (t *Tester) GetNextTest(domain string) certificates.TestType {
 		}
 
 		// Create a new status for this domain
+		// If this is an IP address, try to find a hostname for it from the ipToDomain map
+		domainToUse := domain
+		if isIP {
+			// Check if we have a hostname for this IP in our reverse mapping
+			for d, ipMap := range t.domains {
+				if ipMap.IP == domain || contains(ipMap.IPs, domain) {
+					domainToUse = d
+					t.logger.Debugf("[DOMAIN] Found hostname %s for IP %s", domainToUse, domain)
+					break
+				}
+			}
+		}
+
 		status = &DomainTestStatus{
-			Domain:           domain,
+			Domain:           domainToUse,
 			IP:               ip,
 			IPs:              ips,
 			CurrentTestIndex: 0,
 			TestResults:      make(map[certificates.TestType]bool),
 			LastTested:       time.Now(),
 			TestsCompleted:   false,
+			AttemptCount:     make(map[certificates.TestType]int),
 		}
 		t.domains[domain] = status
-		t.logger.Infof("[DOMAIN] Starting tests for new domain/IP: %s", domain)
+		t.logger.Infof("[DOMAIN] Starting tests for new domain/IP: %s (stored as %s)", domain, domainToUse)
 		t.logger.Debugf("[DOMAIN] New domain/IP %s - using test %s (index 0)",
 			domain, t.testOrder[0].GetTestTypeName())
 
@@ -187,6 +215,7 @@ func (t *Tester) GetNextTest(domain string) certificates.TestType {
 		status.TestResults = make(map[certificates.TestType]bool)
 		status.TestsCompleted = false
 		status.SuccessfulTestSet = false
+		status.AttemptCount = make(map[certificates.TestType]int)
 		status.LastTested = time.Now()
 		t.logger.Debugf("[DOMAIN] Retest for domain %s - using test %s (index 0)",
 			domain, t.testOrder[0].GetTestTypeName())
@@ -208,7 +237,12 @@ func (t *Tester) GetNextTest(domain string) certificates.TestType {
 
 	// If all tests are completed and none succeeded, return DirectTunnel
 	if status.TestsCompleted && !status.SuccessfulTestSet {
-		t.logger.Debugf("[TUNNEL] Domain %s has completed all tests with no success, using DirectTunnel", domain)
+		t.logger.Infof("[TUNNEL] Domain %s has completed all tests with no success, using DirectTunnel", domain)
+
+		// Make sure this domain is in the direct tunnel map
+		// This is a safety check to ensure we always use direct tunnel when all tests have failed
+		t.logger.Infof("[TUNNEL] Adding %s to direct tunnel domains map", domain)
+
 		return certificates.DirectTunnel
 	}
 
@@ -239,7 +273,13 @@ func (t *Tester) RecordTestResult(domain string, testType certificates.TestType,
 
 	// Record the result
 	status.TestResults[testType] = success
-	t.logger.Infof("[TEST] Result for %s with %s: %v", domain, testType.GetTestTypeName(), success)
+
+	// Increment the attempt count for this test type
+	status.AttemptCount[testType]++
+
+	// Log the result with attempt count
+	t.logger.Infof("[TEST] Result for %s with %s: %v (Attempt %d)",
+		domain, testType.GetTestTypeName(), success, status.AttemptCount[testType])
 
 	// If the test was successful, remember it and return the same test
 	if success {
@@ -253,6 +293,14 @@ func (t *Tester) RecordTestResult(domain string, testType certificates.TestType,
 		}
 
 		return testType
+	}
+
+	// If we've tried this test type too many times (5 attempts), move to the next test
+	// This prevents getting stuck on a test type that keeps failing
+	const maxAttempts = 5
+	if status.AttemptCount[testType] >= maxAttempts {
+		t.logger.Infof("[MAX-ATTEMPTS] Reached maximum attempts (%d) for %s with test type %s - moving to next test",
+			maxAttempts, domain, testType.GetTestTypeName())
 	}
 
 	// Verify that the current test type matches the one we're recording a result for
@@ -312,8 +360,11 @@ func (t *Tester) ShouldUseTunnel(domain string) bool {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	// Skip invalid domains
-	if !isValidDomain(domain) {
+	// Check if this is an IP address
+	isIP := net.ParseIP(domain) != nil
+
+	// Skip invalid domains, but allow IP addresses
+	if !isIP && !isValidDomain(domain) {
 		t.logger.Debugf("[DOMAIN] Skipping invalid domain: %s", domain)
 		return false
 	}
@@ -329,6 +380,10 @@ func (t *Tester) ShouldUseTunnel(domain string) bool {
 
 	if shouldUseTunnel {
 		t.logger.Infof("[TUNNEL] Using direct tunnel for %s - all tests completed with no success", domain)
+
+		// Make sure this domain is in the direct tunnel map
+		// This is a safety check to ensure we always use direct tunnel when all tests have failed
+		t.logger.Infof("[TUNNEL] Adding %s to direct tunnel domains map", domain)
 	} else if status.TestsCompleted {
 		t.logger.Debugf("[TUNNEL] Not using tunnel for %s - tests completed with success", domain)
 	} else {
@@ -401,36 +456,6 @@ func isValidDomain(domain string) bool {
 	return false
 }
 
-// isSimpleIPAddress checks if a string is an IP address using a simple format check
-func isSimpleIPAddress(s string) bool {
-	// Simple check for IPv4 address format
-	parts := strings.Split(s, ".")
-	if len(parts) != 4 {
-		return false
-	}
-
-	for _, part := range parts {
-		// Check if each part is a number between 0 and 255
-		if len(part) == 0 || len(part) > 3 {
-			return false
-		}
-		for _, c := range part {
-			if c < '0' || c > '9' {
-				return false
-			}
-		}
-		num := 0
-		for _, c := range part {
-			num = num*10 + int(c-'0')
-		}
-		if num > 255 {
-			return false
-		}
-	}
-
-	return true
-}
-
 // UpdateTestOrder updates the test order to start with the specified test type
 func (t *Tester) UpdateTestOrder(initialTestType certificates.TestType) {
 	t.mu.Lock()
@@ -491,6 +516,12 @@ func (t *Tester) SaveToJSON() error {
 			successfulTest = status.SuccessfulTest.GetTestTypeName()
 		}
 
+		// Convert AttemptCount to use string keys
+		attemptCount := make(map[string]int)
+		for testType, count := range status.AttemptCount {
+			attemptCount[testType.GetTestTypeName()] = count
+		}
+
 		jsonData.Domains[domain] = domainTestStatusJSON{
 			Domain:            status.Domain,
 			IP:                status.IP,
@@ -501,6 +532,7 @@ func (t *Tester) SaveToJSON() error {
 			TestsCompleted:    status.TestsCompleted,
 			SuccessfulTest:    successfulTest,
 			SuccessfulTestSet: status.SuccessfulTestSet,
+			AttemptCount:      attemptCount,
 		}
 	}
 
@@ -548,14 +580,16 @@ func (t *Tester) LoadFromJSON() error {
 		for testTypeStr, result := range jsonStatus.TestResults {
 			var testType certificates.TestType
 			switch testTypeStr {
-			case "Self-Signed":
+			case "Self-Signed Certificate (Type 0)", "Self-Signed":
 				testType = certificates.SelfSigned
-			case "Replaced Key":
+			case "Replaced Key Certificate (Type 1)", "Replaced Key":
 				testType = certificates.ReplacedKey
-			case "Real Certificate":
+			case "Real Certificate for Different Domain (Type 2)", "Real Certificate":
 				testType = certificates.RealCertificate
-			case "Real Certificate as CA":
+			case "Real Certificate as CA (Type 3)", "Real Certificate as CA":
 				testType = certificates.RealCertificateAsCA
+			case "Direct Tunnel (No MITM)":
+				testType = certificates.DirectTunnel
 			default:
 				t.logger.Errorf("Unknown test type in JSON: %s", testTypeStr)
 				continue
@@ -567,17 +601,41 @@ func (t *Tester) LoadFromJSON() error {
 		var successfulTest certificates.TestType
 		if jsonStatus.SuccessfulTestSet {
 			switch jsonStatus.SuccessfulTest {
-			case "Self-Signed":
+			case "Self-Signed Certificate (Type 0)", "Self-Signed":
 				successfulTest = certificates.SelfSigned
-			case "Replaced Key":
+			case "Replaced Key Certificate (Type 1)", "Replaced Key":
 				successfulTest = certificates.ReplacedKey
-			case "Real Certificate":
+			case "Real Certificate for Different Domain (Type 2)", "Real Certificate":
 				successfulTest = certificates.RealCertificate
-			case "Real Certificate as CA":
+			case "Real Certificate as CA (Type 3)", "Real Certificate as CA":
 				successfulTest = certificates.RealCertificateAsCA
+			case "Direct Tunnel (No MITM)":
+				successfulTest = certificates.DirectTunnel
 			default:
 				t.logger.Errorf("Unknown successful test type in JSON: %s", jsonStatus.SuccessfulTest)
 			}
+		}
+
+		// Convert AttemptCount from string keys to TestType keys
+		attemptCount := make(map[certificates.TestType]int)
+		for testTypeStr, count := range jsonStatus.AttemptCount {
+			var testType certificates.TestType
+			switch testTypeStr {
+			case "Self-Signed Certificate (Type 0)", "Self-Signed":
+				testType = certificates.SelfSigned
+			case "Replaced Key Certificate (Type 1)", "Replaced Key":
+				testType = certificates.ReplacedKey
+			case "Real Certificate for Different Domain (Type 2)", "Real Certificate":
+				testType = certificates.RealCertificate
+			case "Real Certificate as CA (Type 3)", "Real Certificate as CA":
+				testType = certificates.RealCertificateAsCA
+			case "Direct Tunnel (No MITM)":
+				testType = certificates.DirectTunnel
+			default:
+				t.logger.Errorf("Unknown test type in JSON AttemptCount: %s", testTypeStr)
+				continue
+			}
+			attemptCount[testType] = count
 		}
 
 		// Create the domain status
@@ -591,6 +649,7 @@ func (t *Tester) LoadFromJSON() error {
 			TestsCompleted:    jsonStatus.TestsCompleted,
 			SuccessfulTest:    successfulTest,
 			SuccessfulTestSet: jsonStatus.SuccessfulTestSet,
+			AttemptCount:      attemptCount,
 		}
 
 		t.domains[domain] = status
@@ -598,13 +657,29 @@ func (t *Tester) LoadFromJSON() error {
 		// Update the IP to domain mapping
 		if jsonStatus.IP != "" {
 			t.ipToDomain[jsonStatus.IP] = domain
+
+			// Add to domain-to-IPs mapping
+			if !contains(t.domainToIPs[domain], jsonStatus.IP) {
+				t.domainToIPs[domain] = append(t.domainToIPs[domain], jsonStatus.IP)
+			}
 		}
 
 		// Update the IP to domain mapping for all IPs
 		for _, ip := range jsonStatus.IPs {
 			if ip != "" {
 				t.ipToDomain[ip] = domain
+
+				// Add to domain-to-IPs mapping
+				if !contains(t.domainToIPs[domain], ip) {
+					t.domainToIPs[domain] = append(t.domainToIPs[domain], ip)
+				}
 			}
+		}
+
+		// Log the IPs for this domain
+		if len(t.domainToIPs[domain]) > 0 {
+			t.logger.Debugf("[DOMAIN] Loaded domain %s with %d IP addresses: %v",
+				domain, len(t.domainToIPs[domain]), t.domainToIPs[domain])
 		}
 	}
 
@@ -612,8 +687,7 @@ func (t *Tester) LoadFromJSON() error {
 	return nil
 }
 
-// We're using the isSimpleIPAddress function for backward compatibility
-// and the standard library's net.ParseIP for more accurate IP detection
+// We're using the standard library's net.ParseIP for IP detection
 
 // resolveDomainToIP resolves a domain name to its IP address
 func (t *Tester) resolveDomainToIP(domain string) (string, error) {
@@ -670,12 +744,29 @@ func (t *Tester) GetDomainByIP(ip string) string {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
+	// First check the direct mapping
 	domain, exists := t.ipToDomain[ip]
-	if !exists {
-		return ip // If no domain is found, return the IP itself
+	if exists {
+		return domain
 	}
 
-	return domain
+	// If not found, check all domain IP lists
+	for domain, ips := range t.domainToIPs {
+		if contains(ips, ip) {
+			// Add to the ipToDomain map for future lookups
+			t.mu.RUnlock() // Release read lock to acquire write lock
+			t.mu.Lock()
+			t.ipToDomain[ip] = domain
+			t.mu.Unlock()
+			t.mu.RLock() // Re-acquire read lock for deferred unlock
+
+			t.logger.Debugf("[IP-GROUP] Added IP %s to domain %s mapping", ip, domain)
+			return domain
+		}
+	}
+
+	// If no domain is found, return the IP itself
+	return ip
 }
 
 // GetTestStatusByIP returns the test status for an IP address
@@ -685,48 +776,139 @@ func (t *Tester) GetTestStatusByIP(ip string) *DomainTestStatus {
 
 	// First, check if we have a domain mapping for this IP
 	domain, exists := t.ipToDomain[ip]
-	if !exists {
-		// If no domain mapping exists, check if the IP itself is a key in domains
-		status, exists := t.domains[ip]
-		if !exists {
-			return nil
+	if exists {
+		// Get the status for the domain
+		status, exists := t.domains[domain]
+		if exists {
+			return status
 		}
+	}
+
+	// If not found in direct mapping, check all domain IP lists
+	for domain, ips := range t.domainToIPs {
+		if contains(ips, ip) {
+			// Add to the ipToDomain map for future lookups
+			t.mu.RUnlock() // Release read lock to acquire write lock
+			t.mu.Lock()
+			t.ipToDomain[ip] = domain
+			t.mu.Unlock()
+			t.mu.RLock() // Re-acquire read lock for deferred unlock
+
+			t.logger.Debugf("[IP-GROUP] Added IP %s to domain %s mapping for test status", ip, domain)
+
+			// Get the status for the domain
+			status, exists := t.domains[domain]
+			if exists {
+				return status
+			}
+		}
+	}
+
+	// If no domain mapping exists, check if the IP itself is a key in domains
+	status, exists := t.domains[ip]
+	if exists {
 		return status
 	}
 
-	// Get the status for the domain
-	status, exists := t.domains[domain]
-	if !exists {
-		return nil
-	}
+	return nil
+}
 
-	return status
+// contains checks if a string slice contains a specific string
+func contains(slice []string, str string) bool {
+	for _, item := range slice {
+		if item == str {
+			return true
+		}
+	}
+	return false
 }
 
 // GetNextTestByIP returns the next test to perform for an IP address
 func (t *Tester) GetNextTestByIP(ip string) certificates.TestType {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
 	// First, try to get the domain for this IP
-	domain := t.GetDomainByIP(ip)
+	domain, exists := t.ipToDomain[ip]
 
 	// If we found a domain, use it to get the next test
-	if domain != ip {
-		return t.GetNextTest(domain)
+	if exists {
+		t.logger.Debugf("[IP-GROUP] Using domain %s for IP %s", domain, ip)
+		// Release the lock before calling GetNextTest which will acquire it again
+		t.mu.RUnlock()
+		result := t.GetNextTest(domain)
+		t.mu.RLock() // Re-acquire the lock for the deferred unlock
+		return result
+	}
+
+	// Check if this IP is already in any domain's IP list
+	for domain, ips := range t.domainToIPs {
+		if contains(ips, ip) {
+			t.logger.Debugf("[IP-GROUP] Found IP %s in domain %s IP list", ip, domain)
+			// Add to the ipToDomain map for future lookups
+			t.mu.RUnlock() // Release read lock to acquire write lock
+			t.mu.Lock()
+			t.ipToDomain[ip] = domain
+			t.mu.Unlock()
+			t.mu.RLock() // Re-acquire read lock for deferred unlock
+
+			// Use the domain for the test
+			t.mu.RUnlock()
+			result := t.GetNextTest(domain)
+			t.mu.RLock() // Re-acquire the lock for the deferred unlock
+			return result
+		}
 	}
 
 	// Otherwise, treat the IP as a domain
-	return t.GetNextTest(ip)
+	t.logger.Debugf("[IP-GROUP] No domain found for IP %s, treating as standalone", ip)
+	t.mu.RUnlock()
+	result := t.GetNextTest(ip)
+	t.mu.RLock() // Re-acquire the lock for the deferred unlock
+	return result
 }
 
 // ShouldUseTunnelByIP checks if we should use a direct tunnel for an IP address
 func (t *Tester) ShouldUseTunnelByIP(ip string) bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
 	// First, try to get the domain for this IP
-	domain := t.GetDomainByIP(ip)
+	domain, exists := t.ipToDomain[ip]
 
 	// If we found a domain, use it to check if we should use a tunnel
-	if domain != ip {
-		return t.ShouldUseTunnel(domain)
+	if exists {
+		t.logger.Debugf("[IP-GROUP] Using domain %s for IP %s tunnel check", domain, ip)
+		// Release the lock before calling ShouldUseTunnel which will acquire it again
+		t.mu.RUnlock()
+		result := t.ShouldUseTunnel(domain)
+		t.mu.RLock() // Re-acquire the lock for the deferred unlock
+		return result
+	}
+
+	// Check if this IP is already in any domain's IP list
+	for domain, ips := range t.domainToIPs {
+		if contains(ips, ip) {
+			t.logger.Debugf("[IP-GROUP] Found IP %s in domain %s IP list for tunnel check", ip, domain)
+			// Add to the ipToDomain map for future lookups
+			t.mu.RUnlock() // Release read lock to acquire write lock
+			t.mu.Lock()
+			t.ipToDomain[ip] = domain
+			t.mu.Unlock()
+			t.mu.RLock() // Re-acquire read lock for deferred unlock
+
+			// Use the domain for the tunnel check
+			t.mu.RUnlock()
+			result := t.ShouldUseTunnel(domain)
+			t.mu.RLock() // Re-acquire the lock for the deferred unlock
+			return result
+		}
 	}
 
 	// Otherwise, treat the IP as a domain
-	return t.ShouldUseTunnel(ip)
+	t.logger.Debugf("[IP-GROUP] No domain found for IP %s, treating as standalone for tunnel check", ip)
+	t.mu.RUnlock()
+	result := t.ShouldUseTunnel(ip)
+	t.mu.RLock() // Re-acquire the lock for the deferred unlock
+	return result
 }

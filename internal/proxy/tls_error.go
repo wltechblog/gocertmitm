@@ -1,8 +1,11 @@
 package proxy
 
 import (
+	"net"
 	"regexp"
 	"strings"
+
+	"github.com/gocertmitm/internal/certificates"
 )
 
 // tlsErrorLogger is a custom logger that captures TLS handshake errors
@@ -15,6 +18,12 @@ type tlsErrorLogger struct {
 func (l *tlsErrorLogger) Write(p []byte) (n int, err error) {
 	// Get the log message
 	msg := string(p)
+
+	// Check if this is a direct tunnel error
+	if strings.Contains(msg, "direct tunnel requested for") {
+		// This is expected when we're using a direct tunnel, so we don't need to log it as an error
+		return len(p), nil
+	}
 
 	// Check if this is a TLS handshake error
 	if strings.Contains(msg, "TLS handshake error") {
@@ -80,6 +89,22 @@ func (l *tlsErrorLogger) Write(p []byte) (n int, err error) {
 			return len(p), nil
 		}
 
+		// Check if this domain is in the direct tunnel map
+		// If it is, we should ignore this error as we're not actually trying to do a TLS handshake
+		l.server.directTunnelMu.Lock()
+		isDirectTunnel := l.server.directTunnelDomains[domain]
+		l.server.directTunnelMu.Unlock()
+
+		if isDirectTunnel {
+			// This is a direct tunnel connection, so we should ignore TLS handshake errors
+			// as we're not actually trying to do a TLS handshake
+			l.server.logger.Debugf("Ignoring TLS handshake error for domain %s as it's in direct tunnel mode", domain)
+
+			// For direct tunnel connections, we should never record handshake failures
+			// or try to do any TLS-related operations
+			return len(p), nil
+		}
+
 		// Get the domain test status before recording the failure
 		domainStatus := l.server.tester.GetTestStatus(domain)
 		if domainStatus != nil {
@@ -89,6 +114,13 @@ func (l *tlsErrorLogger) Write(p []byte) (n int, err error) {
 
 		// Get the current test type for this domain
 		testType := l.server.tester.GetNextTest(domain)
+
+		// Check if the current test type is DirectTunnel
+		if testType == certificates.DirectTunnel {
+			// We're already in direct tunnel mode, so we should ignore this error
+			l.server.logger.Debugf("Ignoring TLS handshake error for domain %s as test type is DirectTunnel", domain)
+			return len(p), nil
+		}
 
 		// Get a request ID for this connection
 		reqID := l.server.logger.GetRequestID(clientIP, domain)
@@ -117,7 +149,38 @@ func (l *tlsErrorLogger) Write(p []byte) (n int, err error) {
 // findDomainForClientIP tries to find the domain being tested for a client IP
 // This is a workaround for when we can't extract the domain from the error message
 func (l *tlsErrorLogger) findDomainForClientIP(clientIP string) string {
-	// First, check the recent domains list
+	// First, check if we have a stored destination for this client IP
+	l.server.clientDestMu.Lock()
+	destination, exists := l.server.clientDestinations[clientIP]
+	l.server.clientDestMu.Unlock()
+
+	if exists {
+		// Extract the host without port
+		var hostWithoutPort string
+		if strings.Contains(destination, ":") {
+			var splitErr error
+			hostWithoutPort, _, splitErr = net.SplitHostPort(destination)
+			if splitErr == nil {
+				// For IP addresses, we want to use the IP directly
+				if net.ParseIP(hostWithoutPort) != nil {
+					l.server.logger.Debugf("Found stored IP destination for client %s: %s", clientIP, hostWithoutPort)
+					return hostWithoutPort
+				} else if isValidDomain(hostWithoutPort) {
+					l.server.logger.Debugf("Found stored domain destination for client %s: %s", clientIP, hostWithoutPort)
+					return hostWithoutPort
+				}
+			}
+		} else if net.ParseIP(destination) != nil {
+			// If it's an IP without port, use it directly
+			l.server.logger.Debugf("Found stored IP destination for client %s: %s", clientIP, destination)
+			return destination
+		} else if isValidDomain(destination) {
+			l.server.logger.Debugf("Found stored domain destination for client %s: %s", clientIP, destination)
+			return destination
+		}
+	}
+
+	// If no stored destination, check the recent domains list
 	recentDomains := l.server.GetRecentDomains()
 	if len(recentDomains) > 0 {
 		// Use the most recent domain as it's likely the one being tested
