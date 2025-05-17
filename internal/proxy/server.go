@@ -867,21 +867,26 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 		var currentTest certificates.TestType
 		var nextTest certificates.TestType
 
+		// Get a request ID for this connection
+		reqID := s.logger.GetRequestID(clientIP, hostWithoutPort)
+
 		if destIP != "" {
 			// Use IP-based lookup first
 			currentTest = s.tester.GetNextTestByIP(destIP)
 			nextTest = s.tester.RecordTestResult(destIP, currentTest, true)
-			s.logger.Infof("Successful MITM for IP %s (host: %s) using %s", destIP, hostWithoutPort, currentTest.GetTestTypeName())
+			s.logger.InfoWithRequestIDf(reqID, "[SUCCESS] Successful MITM for IP %s (host: %s, url: %s) using %s",
+				destIP, hostWithoutPort, r.URL.String(), currentTest.GetTestTypeName())
 		} else {
 			// Fall back to domain-based lookup
 			currentTest = s.tester.GetNextTest(hostWithoutPort)
 			nextTest = s.tester.RecordTestResult(hostWithoutPort, currentTest, true)
-			s.logger.Infof("Successful MITM for domain %s using %s", hostWithoutPort, currentTest.GetTestTypeName())
+			s.logger.InfoWithRequestIDf(reqID, "[SUCCESS] Successful MITM for domain %s (url: %s) using %s",
+				hostWithoutPort, r.URL.String(), currentTest.GetTestTypeName())
 		}
 
 		// If the next test is different, update the certificate function
 		if nextTest != currentTest {
-			s.logger.Infof("Moving to next test for %s: %s", host, nextTest.GetTestTypeName())
+			s.logger.InfoWithRequestIDf(reqID, "[NEXT] Moving to next test for %s: %s", host, nextTest.GetTestTypeName())
 		}
 	}
 
@@ -1631,17 +1636,17 @@ func (s *Server) handleRegularHTTP(w http.ResponseWriter, r *http.Request) {
 		// Get the current test type from the tester
 		if destIP != "" {
 			testType = s.tester.GetNextTestByIP(destIP)
-			s.logger.Infof("Successfully intercepted request from %s to %s (IP: %s) (Test: %s)",
-				clientIP, host, destIP, testType.GetTestTypeName())
+			// This log message is redundant with the [SUCCESS] message above and can be removed
 		} else {
 			testType = s.tester.GetNextTest(hostWithoutPort)
-			s.logger.Infof("Successfully intercepted request from %s to %s (Test: %s)",
-				clientIP, host, testType.GetTestTypeName())
+			// This log message is redundant with the [SUCCESS] message above and can be removed
 		}
 	} else {
 		testType = s.testType
-		s.logger.Infof("Successfully intercepted request from %s to %s (Test: %s)",
-			clientIP, host, testType.GetTestTypeName())
+		// Get a request ID for this connection
+		reqID := s.logger.GetRequestID(clientIP, host)
+		s.logger.InfoWithRequestIDf(reqID, "[SUCCESS] Successfully intercepted request from %s to %s (url: %s) (Test: %s)",
+			clientIP, host, r.URL.String(), testType.GetTestTypeName())
 	}
 }
 

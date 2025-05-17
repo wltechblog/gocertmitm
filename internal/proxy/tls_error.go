@@ -127,7 +127,10 @@ func (l *tlsErrorLogger) Write(p []byte) (n int, err error) {
 				// Since we don't have direct access to the connection in the TLS error handler,
 				// we'll just make sure the domain is marked for direct tunnel mode
 				// Future connections to this domain will use direct tunnel mode automatically
-				l.server.logger.Infof("[TUNNEL-TLS-ERROR] Domain %s marked for direct tunnel mode", domain)
+
+				// Get a request ID for this connection
+				reqID := l.server.logger.GetRequestID(clientIP, domain)
+				l.server.logger.InfoWithRequestIDf(reqID, "[TUNNEL-TLS-ERROR] Domain %s marked for direct tunnel mode", domain)
 
 				return len(p), nil
 			}
