@@ -11,7 +11,10 @@ import (
 // Firewall manages iptables rules
 type Firewall struct {
 	logger *logging.Logger
-	rules  []string
+	// The nat table rules added by this tool; they are removed with a
+	// per-rule delete on Restore instead of flushing the table, which would
+	// also delete unrelated rules such as those created by Docker
+	rules []string
 }
 
 // NewFirewall creates a new firewall manager
@@ -29,19 +32,14 @@ func (f *Firewall) RedirectHTTPS(proxyPort string) error {
 		return fmt.Errorf("iptables not found: %v", err)
 	}
 
-	// Save current rules
-	if err := f.saveCurrentRules(); err != nil {
-		return fmt.Errorf("failed to save current rules: %v", err)
-	}
-
 	// Add rules to redirect HTTPS traffic
-	rules := []string{
+	f.rules = []string{
 		fmt.Sprintf("-t nat -A PREROUTING -p tcp --dport 443 -j REDIRECT --to-port %s", proxyPort),
 		fmt.Sprintf("-t nat -A OUTPUT -p tcp --dport 443 -j REDIRECT --to-port %s", proxyPort),
 	}
 
 	// Apply rules
-	for _, rule := range rules {
+	for _, rule := range f.rules {
 		cmd := exec.Command("iptables", strings.Split(rule, " ")...)
 		if err := cmd.Run(); err != nil {
 			f.logger.Errorf("Failed to apply iptables rule: %v", err)
@@ -54,48 +52,32 @@ func (f *Firewall) RedirectHTTPS(proxyPort string) error {
 	return nil
 }
 
-// Restore restores the original iptables rules
+// Restore removes the redirect rules this tool added to the nat table
 func (f *Firewall) Restore() error {
 	// Check if iptables is available
 	if _, err := exec.LookPath("iptables"); err != nil {
 		return fmt.Errorf("iptables not found: %v", err)
 	}
 
-	// Clear all rules
-	cmd := exec.Command("iptables", "-t", "nat", "-F")
-	if err := cmd.Run(); err != nil {
-		f.logger.Errorf("Failed to clear iptables rules: %v", err)
-		return fmt.Errorf("failed to clear iptables rules: %v", err)
-	}
-
-	// Restore original rules
+	// Delete the rules that were added, one by one. Deleting a missing rule
+	// is not an error here; the goal is to leave just these rules removed.
 	for _, rule := range f.rules {
-		cmd := exec.Command("iptables", strings.Split(rule, " ")...)
+		args := strings.Split(rule, " ")
+		deleteArgs := make([]string, 0, len(args))
+		for _, arg := range args {
+			if arg == "-A" {
+				deleteArgs = append(deleteArgs, "-D")
+			} else {
+				deleteArgs = append(deleteArgs, arg)
+			}
+		}
+
+		cmd := exec.Command("iptables", deleteArgs...)
 		if err := cmd.Run(); err != nil {
-			f.logger.Errorf("Failed to restore iptables rule: %v", err)
-			return fmt.Errorf("failed to restore iptables rule: %v", err)
+			f.logger.Errorf("Failed to remove iptables rule %q: %v", rule, err)
+			return fmt.Errorf("failed to remove iptables rule %q: %v", rule, err)
 		}
-		f.logger.Debugf("Restored iptables rule: %s", rule)
-	}
-
-	return nil
-}
-
-// saveCurrentRules saves the current iptables rules
-func (f *Firewall) saveCurrentRules() error {
-	// Get current rules
-	cmd := exec.Command("iptables-save")
-	output, err := cmd.Output()
-	if err != nil {
-		return fmt.Errorf("failed to save iptables rules: %v", err)
-	}
-
-	// Parse rules
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
-		if strings.HasPrefix(line, "-A") {
-			f.rules = append(f.rules, line[3:])
-		}
+		f.logger.Debugf("Removed iptables rule: %s", rule)
 	}
 
 	return nil
