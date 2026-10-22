@@ -26,7 +26,7 @@ GoCertMITM is a security testing tool for identifying TLS certificate validation
 
 ### Prerequisites
 
-- Go 1.18 or higher
+- Go 1.27 or higher
 - iptables (for traffic redirection)
 - Root/sudo privileges (for network configuration)
 
