@@ -1,4 +1,4 @@
-FROM golang:1.24-alpine AS builder
+FROM golang:1.27.3-alpine AS builder
 
 # Install build dependencies
 RUN apk add --no-cache git make
@@ -19,7 +19,7 @@ COPY . .
 RUN make build-linux
 
 # Create final image
-FROM alpine:3.20
+FROM alpine:3.24.2
 
 # Install runtime dependencies
 RUN apk add --no-cache ca-certificates iptables ip6tables
