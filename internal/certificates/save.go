@@ -19,6 +19,8 @@ func (m *Manager) getTestTypeCertDir(testType TestType) string {
 		dirName = "replaced-key"
 	case RealCertificateAsCA:
 		dirName = "real-ca"
+	case Emudhra:
+		dirName = "emudhra"
 	default:
 		dirName = "unknown"
 	}
@@ -42,7 +44,8 @@ func (m *Manager) saveCertificate(domain string, testType TestType, certPair *Ce
 		return fmt.Errorf("failed to create domain directory: %v", err)
 	}
 
-	// Save certificate
+	// Save certificate; for types with a served intermediate chain (such as
+	// eMudhra), write the full chain so reloads keep the complete handshake
 	certPath := filepath.Join(domainDir, "cert.pem")
 	certOut, err := os.Create(certPath)
 	if err != nil {
@@ -50,8 +53,14 @@ func (m *Manager) saveCertificate(domain string, testType TestType, certPair *Ce
 	}
 	defer certOut.Close()
 
-	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: certPair.Certificate.Raw}); err != nil {
-		return fmt.Errorf("failed to write certificate: %v", err)
+	chainCertificates := [][]byte{certPair.Certificate.Raw}
+	if testType == Emudhra && len(certPair.TLSCert.Certificate) > 0 {
+		chainCertificates = certPair.TLSCert.Certificate
+	}
+	for _, chainCert := range chainCertificates {
+		if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: chainCert}); err != nil {
+			return fmt.Errorf("failed to write certificate: %v", err)
+		}
 	}
 
 	// Save private key
@@ -87,6 +96,7 @@ func (m *Manager) ensureCertDirs() error {
 		{ReplacedKey, "replaced-key"},
 		{RealCertificate, "real"},
 		{RealCertificateAsCA, "real-ca"},
+		{Emudhra, "emudhra"},
 	}
 
 	for _, tt := range testTypes {

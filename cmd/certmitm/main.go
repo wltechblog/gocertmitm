@@ -23,10 +23,11 @@ var (
 	logDir       = flag.String("logdir", "./logs", "Directory to store logs")
 	payloadDir   = flag.String("payloaddir", "./payloads", "Directory to store request/response payloads")
 	savePayloads = flag.Bool("savepayloads", true, "Enable saving of request/response payloads")
-	testType     = flag.String("testtype", "self-signed", "Test type: self-signed, replaced-key, real-cert, real-ca")
+	testType     = flag.String("testtype", "self-signed", "Test type: self-signed, replaced-key, real-cert, real-ca, emudhra")
 	autoTest     = flag.Bool("autotest", true, "Automatically test all methods for each domain")
 	retrySeconds = flag.Int("retryseconds", 86400, "Time in seconds to wait before retesting a domain (default: 24 hours)")
 	maxAttempts  = flag.Int("maxattempts", 1, "Maximum number of attempts for each test type before moving to the next test")
+	emudhraChain = flag.String("emudhra-chain", "both", "Compromised eMudhra chain to serve: modern, old or both")
 )
 
 func main() {
@@ -47,6 +48,12 @@ func main() {
 	if err != nil {
 		logger.Fatalf("Failed to initialize certificate manager: %v", err)
 	}
+
+	// Select the compromised eMudhra chain variant to serve
+	if err := certManager.SetEmudhraChainMode(*emudhraChain); err != nil {
+		logger.Fatalf("Invalid eMudhra chain mode: %v", err)
+	}
+	logger.Infof("eMudhra chain mode: %s", *emudhraChain)
 
 	// Initialize proxy server
 	proxyServer, err := proxy.NewServer(*listenAddr, *listenAddrs, certManager, logger, time.Duration(*retrySeconds)*time.Second)
@@ -80,6 +87,8 @@ func main() {
 		selectedTestType = certificates.RealCertificate
 	case "real-ca":
 		selectedTestType = certificates.RealCertificateAsCA
+	case "emudhra":
+		selectedTestType = certificates.Emudhra
 	default:
 		logger.Fatalf("Invalid test type: %s", *testType)
 	}

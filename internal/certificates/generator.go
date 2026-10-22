@@ -1,6 +1,7 @@
 package certificates
 
 import (
+	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
@@ -99,6 +100,12 @@ func (m *Manager) GenerateCertificate(domain string, testType TestType) (*Certif
 		return nil, fmt.Errorf("failed to generate serial number: %v", err)
 	}
 
+	var derBytes []byte
+	var parentCert *x509.Certificate
+	var parentKey crypto.Signer
+	var extraChainDER [][]byte
+	var leafSignatureAlgorithm x509.SignatureAlgorithm
+
 	template := x509.Certificate{
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{
@@ -111,6 +118,7 @@ func (m *Manager) GenerateCertificate(domain string, testType TestType) (*Certif
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
+		SignatureAlgorithm:    leafSignatureAlgorithm,
 	}
 
 	// Add DNS names and IP addresses
@@ -118,10 +126,6 @@ func (m *Manager) GenerateCertificate(domain string, testType TestType) (*Certif
 	if ip := net.ParseIP(domain); ip != nil {
 		template.IPAddresses = append(template.IPAddresses, ip)
 	}
-
-	var derBytes []byte
-	var parentCert *x509.Certificate
-	var parentKey *rsa.PrivateKey
 
 	switch testType {
 	case SelfSigned:
@@ -138,6 +142,12 @@ func (m *Manager) GenerateCertificate(domain string, testType TestType) (*Certif
 			return nil, fmt.Errorf("failed to generate new key: %v", err)
 		}
 		privateKey = newKey
+	case Emudhra:
+		// Certificate signed with the publicly compromised eMudhra
+		// intermediate CA key (EM OV TLS CA - G3C)
+		parentCert, parentKey = m.emudhra.leafSigner()
+		extraChainDER = m.emudhra.chainDER(m.EmudhraChainMode)
+		leafSignatureAlgorithm = x509.ECDSAWithSHA384
 	case RealCertificate:
 		// Use a real certificate for a different domain
 		realCert, realKey, err := m.loadRealCertificate(domain)
@@ -216,7 +226,8 @@ func (m *Manager) GenerateCertificate(domain string, testType TestType) (*Certif
 		parentKey = m.CA.PrivateKey
 	}
 
-	// Create certificate
+	// Create certificate; for eMudhra the parent key is the compromised
+	// ECDSA key and the signature is ECDSA-SHA384
 	derBytes, err = x509.CreateCertificate(rand.Reader, &template, parentCert, &privateKey.PublicKey, parentKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create certificate: %v", err)
@@ -232,6 +243,11 @@ func (m *Manager) GenerateCertificate(domain string, testType TestType) (*Certif
 	tlsCert := tls.Certificate{
 		Certificate: [][]byte{derBytes},
 		PrivateKey:  privateKey,
+	}
+	// Serve the full compromised CA chain so clients can build a valid path
+	// to their trust store's roots
+	if testType == Emudhra {
+		tlsCert.Certificate = append(tlsCert.Certificate, extraChainDER...)
 	}
 
 	// Save certificate
