@@ -20,8 +20,7 @@ type Logger struct {
 	debug         bool
 	logFile       *os.File
 	nextReqID     uint64
-	reqIDMap      map[string]string // Maps clientIP:host to request ID
-	mu            sync.Mutex        // Mutex to protect concurrent access to reqIDMap and nextReqID
+	mu            sync.Mutex // Mutex to protect nextReqID
 }
 
 // NewLogger creates a new logger
@@ -70,7 +69,6 @@ func NewLogger(logDir string, verbose bool, debug bool) (*Logger, error) {
 		debug:         debug,
 		logFile:       logFile,
 		nextReqID:     1,
-		reqIDMap:      make(map[string]string),
 	}, nil
 }
 
@@ -180,29 +178,13 @@ func (l *Logger) LogConnectionSummary(clientIP, host string, testType string, ac
 		reqID, clientIP, host, testType, result)
 }
 
-// GetRequestID returns a request ID for a client IP and host
-// Always generates a new unique request ID for each call
+// GetRequestID returns a unique request ID for logging
 func (l *Logger) GetRequestID(clientIP, host string) string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	key := clientIP + ":" + host
-
-	// Generate a new request ID
 	reqID := fmt.Sprintf("REQ-%04X", l.nextReqID)
 	l.nextReqID++
 
-	// Store the request ID
-	l.reqIDMap[key] = reqID
-
 	return reqID
-}
-
-// ClearRequestID removes a request ID for a client IP and host
-func (l *Logger) ClearRequestID(clientIP, host string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	key := clientIP + ":" + host
-	delete(l.reqIDMap, key)
 }
