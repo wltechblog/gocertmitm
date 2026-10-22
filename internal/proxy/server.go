@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -135,7 +134,7 @@ func NewServer(httpAddr, httpsAddr string, certManager *certificates.Manager, lo
 							hello.Conn.RemoteAddr())
 
 						// Return nil to indicate that we don't want to proceed with TLS
-						return nil, fmt.Errorf("direct tunnel mode - skipping TLS handshake")
+						return nil, errDirectTunnelSkip
 					}
 
 					// Get the original destination IP
@@ -151,7 +150,7 @@ func NewServer(httpAddr, httpsAddr string, certManager *certificates.Manager, lo
 							origDestIP)
 
 						// Return nil to indicate that we don't want to proceed with TLS
-						return nil, fmt.Errorf("direct tunnel mode - skipping TLS handshake")
+						return nil, errDirectTunnelSkip
 					}
 				}
 
@@ -232,7 +231,7 @@ func NewServer(httpAddr, httpsAddr string, certManager *certificates.Manager, lo
 
 							// Return an error to prevent the TLS handshake from continuing
 							// The next connection will use the direct tunnel path above
-							return nil, fmt.Errorf("direct tunnel requested for %s - reconnect to use direct tunnel", dtErr.Domain)
+							return nil, fmt.Errorf("%w: %s", errDirectTunnelSkip, dtErr.Domain)
 						}
 
 						// For other errors, return them as-is
@@ -262,8 +261,6 @@ func NewServer(httpAddr, httpsAddr string, certManager *certificates.Manager, lo
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  120 * time.Second,
-		// Add error logger to capture TLS handshake errors
-		ErrorLog: log.New(&tlsErrorLogger{server: server}, "", log.Lshortfile),
 	}
 
 	server.logger.Debugf("HTTPS server configured with TLS and certificate manager")
@@ -308,10 +305,13 @@ func (s *Server) Start() error {
 	}
 	s.directTunnelMu.Unlock()
 
-	// Start HTTPS server with direct tunnel listener
+	// Start HTTPS server with handshake listener. The TLS handshake is
+	// performed by the listener so failures are recorded structurally instead
+	// of being scraped from the HTTP server's error log
+	tlsListener := newTLSHandshakeListener(directTunnelListener, s)
 	s.logger.Infof("Starting HTTPS proxy on %s", s.httpsAddr)
 	fmt.Printf("[DEBUG-SERVER] Starting HTTPS proxy on %s\n", s.httpsAddr)
-	if err := s.httpsServer.ServeTLS(directTunnelListener, "", ""); err != nil && err != http.ErrServerClosed {
+	if err := s.httpsServer.Serve(tlsListener); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("HTTPS server error: %v", err)
 	}
 
