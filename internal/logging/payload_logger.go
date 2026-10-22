@@ -7,9 +7,30 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
+
+// sanitizePathComponent makes a user-controlled string (such as the HTTP Host
+// header) safe to use as a directory name so it cannot traverse outside the
+// payload directory
+func sanitizePathComponent(name string) string {
+	if name == "" {
+		return "unknown-host"
+	}
+	s := strings.Map(func(r rune) rune {
+		if r == '/' || r == '\\' || r == 0 || r < 32 || r == 127 {
+			return '_'
+		}
+		return r
+	}, name)
+	switch s {
+	case ".", "..":
+		return "unknown-host"
+	}
+	return s
+}
 
 // PayloadLogger handles logging of HTTP request and response payloads
 type PayloadLogger struct {
@@ -35,7 +56,7 @@ func (p *PayloadLogger) LogRequest(clientIP, host string, req *http.Request, req
 	defer p.mu.Unlock()
 
 	// Create domain directory if it doesn't exist
-	domainDir := filepath.Join(p.baseDir, host)
+	domainDir := filepath.Join(p.baseDir, sanitizePathComponent(host))
 	if err := os.MkdirAll(domainDir, 0700); err != nil {
 		return fmt.Errorf("failed to create domain directory: %v", err)
 	}
@@ -116,7 +137,7 @@ func (p *PayloadLogger) LogResponse(clientIP, host string, resp *http.Response, 
 	defer p.mu.Unlock()
 
 	// Create domain directory if it doesn't exist
-	domainDir := filepath.Join(p.baseDir, host)
+	domainDir := filepath.Join(p.baseDir, sanitizePathComponent(host))
 	if err := os.MkdirAll(domainDir, 0700); err != nil {
 		return fmt.Errorf("failed to create domain directory: %v", err)
 	}

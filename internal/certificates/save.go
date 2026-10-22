@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // getTestTypeCertDir returns the directory for storing certificates of a specific test type
@@ -39,7 +40,7 @@ func (m *Manager) saveCertificate(domain string, testType TestType, certPair *Ce
 	certDir := m.getTestTypeCertDir(testType)
 
 	// Create domain directory
-	domainDir := filepath.Join(certDir, domain)
+	domainDir := filepath.Join(certDir, sanitizePathName(domain))
 	if err := os.MkdirAll(domainDir, 0755); err != nil {
 		return fmt.Errorf("failed to create domain directory: %v", err)
 	}
@@ -79,6 +80,26 @@ func (m *Manager) saveCertificate(domain string, testType TestType, certPair *Ce
 
 	m.logger.Debugf("Saved certificate for %s (test type: %s)", domain, testType.GetTestTypeName())
 	return nil
+}
+
+// sanitizePathName makes a user-controlled value (such as the SNI from a
+// client hello) safe to use as a directory name so it cannot traverse outside
+// the certificate directory
+func sanitizePathName(name string) string {
+	if name == "" {
+		return "unknown-domain"
+	}
+	s := strings.Map(func(r rune) rune {
+		if r == '/' || r == '\\' || r == 0 || r < 32 || r == 127 {
+			return '_'
+		}
+		return r
+	}, name)
+	switch s {
+	case ".", "..":
+		return "unknown-domain"
+	}
+	return s
 }
 
 // ensureCertDirs ensures that all certificate directories exist
