@@ -108,7 +108,6 @@ func (m *Manager) GenerateCertificate(domain string, testType TestType) (*Certif
 	var parentCert *x509.Certificate
 	var parentKey crypto.Signer
 	var extraChainDER [][]byte
-	var leafSignatureAlgorithm x509.SignatureAlgorithm
 
 	template := x509.Certificate{
 		SerialNumber: serialNumber,
@@ -122,7 +121,7 @@ func (m *Manager) GenerateCertificate(domain string, testType TestType) (*Certif
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
-		SignatureAlgorithm:    leafSignatureAlgorithm,
+		SignatureAlgorithm:    x509.UnknownSignatureAlgorithm, // chosen from the signer automatically
 	}
 
 	// Add DNS names and IP addresses
@@ -151,7 +150,6 @@ func (m *Manager) GenerateCertificate(domain string, testType TestType) (*Certif
 		// intermediate CA key (EM OV TLS CA - G3C)
 		parentCert, parentKey = m.emudhra.leafSigner()
 		extraChainDER = m.emudhra.chainDER(m.EmudhraChainMode)
-		leafSignatureAlgorithm = x509.ECDSAWithSHA384
 	case RealCertificate:
 		// Use a real certificate for a different domain
 		realCert, realKey, err := m.loadRealCertificate(domain)

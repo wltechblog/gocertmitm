@@ -80,6 +80,7 @@ You can also run GoCertMITM using Docker:
 - `-logdir`: Directory to store logs (default: "./logs")
 - `-payloaddir`: Directory to store request/response payloads (default: "./payloads")
 - `-savepayloads`: Enable saving of request/response payloads (default: true)
+- `-retryseconds`: Seconds to wait before retesting a domain (default: 86400)
 - `-testtype`: Test type to start with (default: "self-signed")
   - `self-signed`: Test if clients accept self-signed certificates (Type 0)
   - `replaced-key`: Test if clients verify the certificate's public key (Type 1)
