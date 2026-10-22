@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/tls"
 	"fmt"
@@ -25,38 +24,6 @@ type DirectTunnelError struct {
 // Error implements the error interface
 func (e *DirectTunnelError) Error() string {
 	return fmt.Sprintf("direct tunnel requested for %s", e.Domain)
-}
-
-// directTunnelResponseWriter is a fake http.ResponseWriter that can be hijacked
-// for direct tunnel connections
-type directTunnelResponseWriter struct {
-	conn net.Conn
-	code int
-}
-
-// Header returns a dummy header map
-func (w *directTunnelResponseWriter) Header() http.Header {
-	return make(http.Header)
-}
-
-// Write writes to the connection
-func (w *directTunnelResponseWriter) Write(b []byte) (int, error) {
-	return w.conn.Write(b)
-}
-
-// WriteHeader sets the status code
-func (w *directTunnelResponseWriter) WriteHeader(code int) {
-	w.code = code
-}
-
-// Hijack returns the underlying connection
-func (w *directTunnelResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	// Create a buffered reader/writer for the connection
-	br := bufio.NewReader(w.conn)
-	bw := bufio.NewWriter(w.conn)
-	brw := bufio.NewReadWriter(br, bw)
-
-	return w.conn, brw, nil
 }
 
 // Server represents a proxy server
@@ -914,35 +881,9 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Check if the client connection is a DebugConnection and if it's marked for direct tunnel mode
-	if hijacker, ok := w.(http.Hijacker); ok {
-		clientConn, _, hijackErr := hijacker.Hijack()
-		if hijackErr == nil {
-			if debugConn, ok := clientConn.(*DebugConnection); ok {
-				if debugConn.IsDirectTunnel() {
-					// This connection is already marked for direct tunnel mode
-					fmt.Printf("[DEBUG-CONNECT] Connection from %s is marked for direct tunnel mode, using direct tunnel\n",
-						clientIP)
-
-					// Get the original destination IP and port
-					origDestIP, origDestPort := debugConn.GetOriginalDestination()
-
-					if origDestIP != "" {
-						// Update the request host to use the original destination
-						r.Host = fmt.Sprintf("%s:%d", origDestIP, origDestPort)
-						fmt.Printf("[DEBUG-CONNECT] Using original destination %s for direct tunnel\n", r.Host)
-					}
-
-					// Use direct tunnel for this connection
-					s.handleDirectTunnel(w, r)
-					return
-				}
-			}
-
-			// If we're not using direct tunnel mode, close the connection so it can be hijacked again later
-			clientConn.Close()
-		}
-	}
+	// NOTE: Connection-level direct-tunnel checks are not done here. The
+	// connection must not be hijacked at this point; it is hijacked exactly
+	// once below for whichever mode is selected (direct tunnel or MITM).
 
 	// Extract the host and port
 	host := r.Host
