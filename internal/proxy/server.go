@@ -286,10 +286,10 @@ func (s *Server) Start() error {
 	// Start HTTP server with debug listener
 	go func() {
 		s.logger.Infof("Starting HTTP proxy on %s", s.httpAddr)
-		fmt.Printf("[DEBUG-SERVER] Starting HTTP proxy on %s\n", s.httpAddr)
+		s.logger.Infof("Starting HTTP proxy on %s", s.httpAddr)
 		if err := s.httpServer.Serve(httpListener); err != nil && err != http.ErrServerClosed {
 			s.logger.Errorf("HTTP server error: %v", err)
-			fmt.Printf("[DEBUG-SERVER] HTTP server error: %v\n", err)
+			s.logger.Errorf("HTTP server error: %v", err)
 		}
 	}()
 
@@ -299,20 +299,12 @@ func (s *Server) Start() error {
 		server:   s,
 	}
 
-	// Log the current direct tunnel domains map
-	s.directTunnelMu.Lock()
-	fmt.Printf("[DEBUG-SERVER-START] Current directTunnelDomains map contents:\n")
-	for domain := range s.directTunnelDomains {
-		fmt.Printf("[DEBUG-SERVER-START]   %s\n", domain)
-	}
-	s.directTunnelMu.Unlock()
-
 	// Start HTTPS server with handshake listener. The TLS handshake is
 	// performed by the listener so failures are recorded structurally instead
 	// of being scraped from the HTTP server's error log
 	tlsListener := newTLSHandshakeListener(directTunnelListener, s)
 	s.logger.Infof("Starting HTTPS proxy on %s", s.httpsAddr)
-	fmt.Printf("[DEBUG-SERVER] Starting HTTPS proxy on %s\n", s.httpsAddr)
+	s.logger.Infof("Starting HTTPS proxy on %s", s.httpsAddr)
 	if err := s.httpsServer.Serve(tlsListener); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("HTTPS server error: %v", err)
 	}
@@ -871,17 +863,9 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Get client IP
 	clientIP := getClientIP(r)
 
-	// Print immediate debug information about the CONNECT request
-	fmt.Printf("[DEBUG-CONNECT-REQUEST] New CONNECT request from %s to %s (Proto: %s)\n",
+	// Log immediate debug information about the CONNECT request
+	s.logger.Debugf("[CONNECT-REQUEST] New CONNECT request from %s to %s (Proto: %s)",
 		clientIP, r.Host, r.Proto)
-
-	// Log all request headers for debugging
-	fmt.Printf("[DEBUG-CONNECT-HEADERS] CONNECT request headers from %s:\n", clientIP)
-	for name, values := range r.Header {
-		for _, value := range values {
-			fmt.Printf("[DEBUG-CONNECT-HEADERS]   %s: %s\n", name, value)
-		}
-	}
 
 	// NOTE: Connection-level direct-tunnel checks are not done here. The
 	// connection must not be hijacked at this point; it is hijacked exactly
@@ -1117,8 +1101,6 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// This is useful for transparent proxy mode
 	var originalDest *OriginalDestination
 	if tcpConn, ok := clientConn.(*net.TCPConn); ok {
-		fmt.Printf("[DEBUG-CONNECT] Attempting to get original destination for connection from %s (Host: %s)\n",
-			clientIP, r.Host)
 
 		var err error
 		originalDest, err = GetOriginalDst(tcpConn)
@@ -1127,16 +1109,10 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 			s.logger.InfoWithRequestIDf(reqID, "[ORIGINAL-DST] Original destination for client %s: %s (Host header: %s)",
 				clientIP, originalDest.HostPort, r.Host)
 
-			fmt.Printf("[DEBUG-CONNECT] Successfully got original destination: %s for client %s (Host header: %s)\n",
-				originalDest.HostPort, clientIP, r.Host)
-
 			// Always use the original destination IP:port from SO_ORIGINAL_DST
 			// This ensures we're connecting to the correct destination regardless of DNS
 			if originalDest.HostPort != r.Host {
 				s.logger.InfoWithRequestIDf(reqID, "[ORIGINAL-DST] Using original destination %s instead of Host header %s",
-					originalDest.HostPort, r.Host)
-
-				fmt.Printf("[DEBUG-CONNECT] Original destination %s differs from Host header %s - using original destination\n",
 					originalDest.HostPort, r.Host)
 
 				// Store the original hostname for logging purposes
@@ -1350,6 +1326,11 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	// Start proxying data between client and target
 	s.logger.Debugf("Starting to proxy data between client %s and target %s", clientIP, r.Host)
+
+	// Clear the setup deadlines; HTTPS tunnels are long-lived and must not be
+	// killed by the 30 second timeout that only covers the handshake/setup
+	_ = clientConn.SetDeadline(time.Time{})
+	_ = targetConn.SetDeadline(time.Time{})
 
 	// Extract domain without port for logging and test tracking
 	hostWithoutPort = r.Host
