@@ -76,9 +76,13 @@ func (m *Manager) GenerateCA() (*CertificateAuthority, error) {
 
 // GenerateCertificate generates a certificate for the given domain
 func (m *Manager) GenerateCertificate(domain string, testType TestType) (*CertificatePair, error) {
+	// Cache entries are keyed by domain and test type so that certificates
+	// generated for one test are never served for a different test
+	cacheKey := fmt.Sprintf("%s-%d", domain, testType)
+
 	// Check if certificate is already in cache
 	m.cacheMutex.RLock()
-	cachedCert, ok := m.CertCache[domain]
+	cachedCert, ok := m.CertCache[cacheKey]
 	m.cacheMutex.RUnlock()
 	if ok {
 		return cachedCert, nil
@@ -196,7 +200,7 @@ func (m *Manager) GenerateCertificate(domain string, testType TestType) (*Certif
 				TLSCert:     tlsCert,
 			}
 			m.cacheMutex.Lock()
-			m.CertCache[domain] = certPair
+			m.CertCache[cacheKey] = certPair
 			m.cacheMutex.Unlock()
 
 			// Log certificate details for debugging
@@ -259,7 +263,7 @@ func (m *Manager) GenerateCertificate(domain string, testType TestType) (*Certif
 
 	// Add to cache
 	m.cacheMutex.Lock()
-	m.CertCache[domain] = certPair
+	m.CertCache[cacheKey] = certPair
 	m.cacheMutex.Unlock()
 
 	return certPair, nil
