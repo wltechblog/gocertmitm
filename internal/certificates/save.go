@@ -63,9 +63,10 @@ func (m *Manager) saveCertificate(domain string, testType TestType, certPair *Ce
 		}
 	}
 
-	// Save private key
+	// Save private key with restrictive permissions so intercepted key
+	// material is not readable by other users on the host
 	keyPath := filepath.Join(domainDir, "key.pem")
-	keyOut, err := os.Create(keyPath)
+	keyOut, err := os.OpenFile(keyPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to create key file: %v", err)
 	}
