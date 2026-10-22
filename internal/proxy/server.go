@@ -48,6 +48,7 @@ type Server struct {
 	clientDestMu        sync.Mutex                                // Mutex for clientDestinations
 	recentDomains       []string                                  // Track recently accessed domains
 	recentDomainsMu     sync.Mutex                                // Mutex for recentDomains
+	regularTransport    *http.Transport                           // Shared transport for regular HTTP requests
 }
 
 // NewServer creates a new proxy server
@@ -80,6 +81,7 @@ func NewServer(httpAddr, httpsAddr string, certManager *certificates.Manager, lo
 		tester:              tester,
 		autoTest:            true, // Enable automatic testing by default
 		failedHandshakes:    make(map[string]map[certificates.TestType]bool),
+		regularTransport:    newRegularTransport(),
 		directTunnelDomains: make(map[string]bool),
 		clientDestinations:  make(map[string]string), // Track client IP to destination mapping
 		recentDomains:       make([]string, 0, 10),   // Track up to 10 recent domains
@@ -760,7 +762,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Handle regular HTTP request
-	s.handleRegularHTTP(w, r)
+	s.handleRegularHTTP(w, r, "http")
 }
 
 // handleHTTPS handles HTTPS requests
@@ -858,7 +860,7 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Handle regular HTTP request (but over HTTPS)
-	s.handleRegularHTTP(w, r)
+	s.handleRegularHTTP(w, r, "https")
 }
 
 // handleConnect handles CONNECT requests (for HTTPS)
@@ -1405,8 +1407,33 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
-// handleRegularHTTP handles regular HTTP requests
-func (s *Server) handleRegularHTTP(w http.ResponseWriter, r *http.Request) {
+// newRegularTransport builds the shared transport used to relay decrypted
+// requests to their target servers. Connections are pooled across requests so
+// that a Transport is not created per request.
+func newRegularTransport() *http.Transport {
+	return &http.Transport{
+		// Accept any certificate presented by the server
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+		},
+		DisableCompression: true,
+		// Add more aggressive timeouts
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
+	}
+}
+
+// handleRegularHTTP handles a client request that is already decrypted.
+// The scheme selects how the target request is re-issued: "https" when the
+// original connection was TLS (decrypted MITM traffic) and "http" for plain
+// HTTP proxying on the plain port.
+func (s *Server) handleRegularHTTP(w http.ResponseWriter, r *http.Request, scheme string) {
 	// Get client IP and host
 	clientIP := getClientIP(r)
 	host := r.Host
@@ -1438,7 +1465,7 @@ func (s *Server) handleRegularHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Construct a proper URL with scheme
-	targetURL := fmt.Sprintf("https://%s%s", host, r.URL.Path)
+	targetURL := fmt.Sprintf("%s://%s%s", scheme, host, r.URL.Path)
 	if r.URL.RawQuery != "" {
 		targetURL += "?" + r.URL.RawQuery
 	}
@@ -1467,24 +1494,9 @@ func (s *Server) handleRegularHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Create HTTP client with transport that accepts any certificate
-	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: true, // Accept any certificate presented by the server
-		},
-		DisableCompression: true,
-		// Add more aggressive timeouts
-		DialContext: (&net.Dialer{
-			Timeout:   10 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-	}
-
+	// HTTP client with shared transport that accepts any certificate
 	client := &http.Client{
-		Transport: transport,
+		Transport: s.regularTransport,
 		Timeout:   30 * time.Second,
 		// Don't follow redirects automatically
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
